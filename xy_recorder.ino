@@ -5,7 +5,7 @@
   Added dial controller
 
 */
- 
+
 #define DEBUG_DAC
 #undef DEBUG_DIAL
 #define DEBUG_STORY
@@ -26,6 +26,9 @@ int data = 4;
 int dialInputPin = 7;
 int soundOutputPin = 8;
 int tonePin = 10;
+
+int dels[4] = {1600, 1100, 800};  // default tone for incorrect number
+int dum;  // dummy global var to avoid compiler optimization
 
 
 // DAC variables
@@ -244,7 +247,6 @@ int dialPinStateChanged()
 #define RESET_DELAY_DIAL     100
 char dialDigits[MAX_DIAL_NUMBER_LEN+1];  // dialed digits buffer
 int  dialDigitsNum = -2;    // dialed digits count
-char sound[200];  // buffer of digits: pitch, length
 
 void resetDialDigits() {
   dialDigitsNum = -1;
@@ -337,82 +339,6 @@ int dialDigitDetected()
 
 
 
-void beep(char *input) {
-  static int curNoteIdx = 0;
-  static int curNoteVal;
-  static int phase = 0;
-  static char freq[100];
-  static char dur[100];
-  static int curNoteDur;
-  static int soundlen;
-  static char outlevel;
-  int inplen = strlen(input);
-
-  inplen = inplen > 200 ? 200/2 : inplen/2;
-  // setup sound
-  if(inplen > 0) {
-    // read input tones 
-    for(int ff=0; ff<inplen; ff++) {
-      freq[ff] = input[ff*2];
-      dur[ff] = input[ff*2+1] * 2;
-#ifdef DEBUG_DIAL
-    Serial.print((int)freq[ff]);
-    Serial.print(",");
-    Serial.print((int)dur[ff]);
-    Serial.print(" ");
-#endif
-    }
-    soundlen = inplen;
-    curNoteIdx = 0;
-    curNoteVal = freq[curNoteIdx];
-    curNoteDur = dur[curNoteIdx] * 50;
-    phase = 0;
-  }
-  
-  // play sound
-  if(curNoteIdx < soundlen) {
-  //if(1) {
-      phase++;
-      switch(curNoteVal) {
-        case 10:
-            break;
-        case 11:
-            break;
-        default:
-            if(phase % curNoteVal == 0) {
-                outlevel = 1 - outlevel;
-                digitalWrite(soundOutputPin, outlevel);
-             }
-      }
-      phase %= curNoteDur;
-      if(phase == 0) {
-          curNoteIdx++;
-          curNoteVal = freq[curNoteIdx];
-          curNoteDur = dur[curNoteIdx] * 50;
-      }
-  }
-  else
-      digitalWrite(soundOutputPin, LOW);
-}
-
-void setSoundTxt(char *txt) {
-    int len = strlen(txt) / 2;
-    memset(sound, 0, sizeof(sound));
-    for(int ff=0; ff<len; ff++) {
-        sound[ff*2] = txt[ff*2] + 3 - '0';
-        sound[ff*2+1] = txt[ff*2+1] - '0';
-    }
-    beep(sound);
-}
-void setSoundTxtSteady(char *txt, char notelen) {
-    int txtlen = strlen(txt);
-    memset(sound, 0, sizeof(sound));
-    for(int ff=0; ff<txtlen; ff++) {
-        sound[ff*2] = txt[ff] + 3 - '0';
-        sound[ff*2+1] = notelen;
-    }
-    beep(sound);
-}
 
 #define TONE_NONE    0
 #define TONE_READY   1
@@ -425,10 +351,6 @@ void setTone(int mode) {
   static int phase;
   static int phase_step;
   
-  if(phase == 0)
-      digitalWrite(tonePin, HIGH);  // turn tone on
-  if(phase == duty)
-      digitalWrite(tonePin, LOW);   // turn tone off
   phase += phase_step;
   phase %= full_period;
   
@@ -458,7 +380,136 @@ void setTone(int mode) {
       phase_step = 1;
       break;
   }
+
+  if(phase == 0)
+      digitalWrite(tonePin, HIGH);  // turn tone on
+  if(phase == duty)
+      digitalWrite(tonePin, LOW);   // turn tone off
+}
+
+char sound[200];  // buffer of digits: pitch, length
+void effect(int effectNumber) {
+  int del = dels[0];
+  int dur;
+      setTone(TONE_NONE);  // initially make it silent
+      switch(effectNumber) {
+        case 11:  // czekanie na podniesienie sluchawki
+            setTone(TONE_FREE);
+            break;
+        case 12:  // losowy trzask
+            for(int ff=0; ff<150; ff++) {
+              digitalWrite(soundOutputPin, random(4));
+            }
+            break;
+        case 13:  // nie ma takiego numeru
+            dur = 50 * (10000 / del);
+            for(int ff=0; ff<dur; ff++) {
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, LOW);
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, HIGH);
+            }
+            dur = del - 1 + 1;
+            del = dels[1];
+            dur = 50 * (10000 / del);
+            for(int ff=0; ff<dur; ff++) {
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, LOW);
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, HIGH);
+            }
+            del = dels[2];
+            dur = 50 * (10000 / del);
+            for(int ff=0; ff<dur; ff++) {
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, LOW);
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, HIGH);
+            }
+            break;
+        case 14:
+            setTone(TONE_BUSY);
+            break;
+      }
+}
+
+void beep(char *input) {
+  static int curNoteIdx = 0;
+  static int curNoteVal;
+  static int phase = 0;
+  static char freq[100];
+  static int dur[100];
+  static int curNoteDur;
+  static int soundlen;
+  static char outlevel;
+  int inplen = strlen(input);
+
+  if(*input == 'x') {
+      soundlen = 0;
+      return;
+  }
+  inplen = inplen > 200 ? 200/2 : inplen/2;
+  // setup sound
+  if(inplen > 0) {
+    // read input tones 
+    for(int ff=0; ff<inplen; ff++) {
+      freq[ff] = input[ff*2];
+      dur[ff] = input[ff*2+1] * 2;
+#ifdef DEBUG_DIAL
+    Serial.print((int)freq[ff]);
+    Serial.print(",");
+    Serial.print((int)dur[ff]);
+    Serial.print(" ");
+#endif
+    }
+    soundlen = inplen;
+    Serial.print("soundlen: ");
+    Serial.println(soundlen);
+    curNoteIdx = 0;
+    curNoteVal = freq[curNoteIdx];
+    curNoteDur = dur[curNoteIdx] * 500;
+    phase = 0;
+    effect(curNoteVal);
+  }
   
+  // play sound
+  if(curNoteIdx < soundlen) {
+      phase++;
+      if(curNoteVal < 11)
+            if(phase % curNoteVal == 0) {
+                outlevel = 1 - outlevel;
+                digitalWrite(soundOutputPin, outlevel);
+             }
+      phase %= curNoteDur;
+      if(phase == 0) {
+        Serial.println("fire effect");
+          curNoteIdx++;
+          curNoteVal = freq[curNoteIdx];
+          curNoteDur = dur[curNoteIdx] * 500;
+       effect(curNoteVal);
+      }
+  }
+  else
+      digitalWrite(soundOutputPin, LOW);
+}
+
+void setSoundTxt(char *txt) {
+    int len = strlen(txt) / 2;
+    memset(sound, 0, sizeof(sound));
+    for(int ff=0; ff<len; ff++) {
+        sound[ff*2] = txt[ff*2] - '0' + 1;
+        sound[ff*2+1] = txt[ff*2+1] - '0';
+    }
+    beep(sound);
+}
+void setSoundTxtSteady(char *txt, char notelen) {
+    int txtlen = strlen(txt);
+    memset(sound, 0, sizeof(sound));
+    for(int ff=0; ff<txtlen; ff++) {
+        sound[ff*2] = txt[ff] + 3 - '0';
+        sound[ff*2+1] = notelen;
+    }
+    beep(sound);
 }
 
 // END OF DIAL WHEEL ROUTINES
@@ -482,9 +533,9 @@ void setup() {
   pinMode(tonePin, OUTPUT);
 
   // Pins for TDA1543 DAC
-  pinMode(ws, OUTPUT);
-  pinMode(bck, OUTPUT);
-  pinMode(data, OUTPUT);
+  pinMode(ws, OUTPUT);     
+  pinMode(bck, OUTPUT);     
+  pinMode(data, OUTPUT);     
   randomSeed(1809);
 
   // plotter pin
@@ -510,6 +561,7 @@ void setup() {
     else
       test_mode = 1 - test_mode;         // toggle
   };
+
 
 void loop() {
   // dac variables
@@ -556,6 +608,10 @@ void loop() {
   
 
 
+
+
+
+
   // Dial wheel controlling section
   
   digitalWrite(led, digitalRead(dialInputPin));   // turn the LED on (HIGH is the voltage level)
@@ -568,52 +624,137 @@ void loop() {
   {
     last_dc = dc;
     if(dc == 0) {
-#ifdef DEBUG_DIAL
+      #ifdef DEBUG_DIAL
       Serial.print(dc);
       Serial.println(": Picked up.");
-#endif
+      #endif
       setTone(TONE_READY);
     }
     if(dc < 0) {
-#ifdef DEBUG_DIAL
+      #ifdef DEBUG_DIAL
       Serial.print(dc);
       Serial.println(": Hanged up.");      
-#endif
+      #endif
       setTone(TONE_NONE);
+      memset(sound, 0, sizeof(sound));
+      beep("x");  // clear beeps
     }
     if(dc > 0)
-    { 
+    {
+      if(dc == 1) {
+         setTone(TONE_NONE);
+         memset(sound, 0, sizeof(sound));
+         beep("x");
+      }
       // Put number driven commands here
       
+      if(strncmp(dialDigits, "5", 1) == 0) {
+        /*
+        memset(sound, 0, sizeof(sound));
+        sound[0] = 11;   // sygnal wolne
+        sound[1] = 200 + random(50);
+        sound[2] = 12;   // trzask
+        sound[3] = 1;
+        beep(sound);
+        */
+            memset(sound, 0, sizeof(sound));
+            sound[0] = 13;   // sygnal nie ma takiego numeru
+            sound[1] = 5;
+            sound[2] = 13;   // sygnal nie ma takiego numeru
+            sound[3] = 5;
+            sound[4] = 13;   // sygnal nie ma takiego numeru
+            sound[5] = 5;
+            sound[6] = 14;   // busy
+            sound[7] = 50;
+            beep(sound);
+
+      }
+      else
+      
+      if(strncmp(dialDigits, "713216216", (dc < 9) ? dc : 9) == 0) {
+        // catch prefix 713216216 + n + xxxx  -> n=1,2,3  xxxx=delay
+        // set one of the three tones in "number not available"
+        if(dc == 14)
+        {
+            int del, dur, nn;
+            sscanf(&dialDigits[10], "%d", &del);
+            nn = dialDigits[9]-'1';
+            if(nn > 2) nn = 2;
+            dels[nn] = del;
+            dur = 50 * (10000 / del);
+            Serial.print(del);
+            Serial.print("/");
+            Serial.println(dur);
+            for(int ff=0; ff<dur; ff++) {
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, LOW);
+              for(int t=0;t<del*1;t++) dum = dum+1-1;
+                  digitalWrite(soundOutputPin, HIGH);
+            }
+        }
+      }
+      else
       if(strncmp(dialDigits, "7173017", 7) == 0) {
-          setTestMode(-1);  // toggle test mode
-#ifdef DEBUG_STORY
+        // 7173017 toggles DAC test mode
+          setTestMode(-1);  // toggle test mode (DAC)
+          #ifdef DEBUG_STORY
           Serial.print("Test Mode ");
           Serial.println(digitalRead(mode) == test_mode);
-#endif
+          #endif
           // resetDialDigits(); 
           story_length = -1;
           setSoundTxt("01110141");
       }
       else
-      if(dialDigits[0] == '9' && dc == 7) {
+      if(dialDigits[0] == '9' && dc <= 7) {
+        // 7 digit number starting with 9 sets seed for DAC story
+        if(dc == 7) {
            // set new story (seed)
            int seed;
            sscanf(&dialDigits[1], "%d", &seed);
            randomSeed(seed);
            story_length = random(20) + 3;
-           setSoundTxtSteady(dialDigits, 2);
            setTestMode(0);
+           
+           setSoundTxtSteady(dialDigits, 1);
            // resetDialDigits(); 
-#ifdef DEBUG_STORY
-    sprintf(outdbg, "seed %d, length %d", seed, story_length);
-    Serial.println(outdbg);
-#endif
+          #ifdef DEBUG_STORY
+          sprintf(outdbg, "seed %d, length %d", seed, story_length);
+          Serial.println(outdbg);
+          #endif
+        }
       }
-      else {
-
-      if(dc > 12)
-          setTone(TONE_BUSY);
+      else
+      if(strncmp(dialDigits, "71", 2) == 0) {
+        // all 9 digit numbers starting 71 can be free or busy
+        if(dc == 9) {
+           // po sygnale ktos odbiera
+           if(random(2)) {
+               memset(sound, 0, sizeof(sound));
+               sound[0] = 11;   // sygnal wolne
+               sound[1] = 200 + random(50);
+               sound[2] = 12;   // trzask
+               sound[3] = 1;
+               beep(sound);
+           }
+           else {
+               setTone(TONE_BUSY); // zajete
+           }
+           //resetDialDigits(); 
+        }
+      }
+      else
+      if(dc > 12) {
+        // all numbers longer than 12 are unknown
+            memset(sound, 0, sizeof(sound));
+            sound[0] = 13;   // sygnal nie ma takiego numeru
+            sound[1] = 10;
+            sound[0] = 12;   // sygnal nie ma takiego numeru
+            sound[1] = 100;
+            sound[0] = 13;   // sygnal nie ma takiego numeru
+            sound[1] = 100;
+            beep(sound);
+      }
       else
       if(dc > 10)
           setTone(TONE_FREE);
@@ -636,9 +777,8 @@ void loop() {
         Serial.print(dialDigits);
         Serial.println("");
 #endif
-      }
-    }
-  }
+      } // dc > 0
+  } // dc != lastdc
 
   // End of dial wheel controlling section
   
