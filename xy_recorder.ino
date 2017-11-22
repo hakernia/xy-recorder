@@ -22,9 +22,11 @@ long target_val2 = 0;
 double dval1 = (double)val1;
 double dval2 = (double)val2;
 
-int caret_speed = 20;
+int caret_speed = 5;
 double dstep1 = caret_speed;
 double dstep2 = caret_speed;
+
+char outdbg[300];
 
 
 // the setup routine runs once when you press reset:
@@ -41,6 +43,8 @@ void setup() {
 
     target_val1 = random(65535);
     target_val2 = random(65535);
+    
+  randomSeed(1809);
 
 }
 
@@ -69,9 +73,22 @@ void send_data(short value_l, short value_r) {
 
 void set_target(int trg1, int trg2) {
   
+  //trg1 = trg1 > 32767 ? 32767 : trg1;
+  //trg2 = trg2 > 32767 ? 32767 : trg2;
+/*  
+    Serial.print("val1:");
+    Serial.print(val1);
+    Serial.print("  val2:");
+    Serial.print(val2);
+
+    Serial.print("  trg1:");
+    Serial.print(trg1);
+    Serial.print("  trg2:");
+    Serial.print(trg2);
+*/    
   target_val1 = trg1;
   target_val2 = trg2;
-    
+  
   // set step so that both arrive the target at the same time
   // if distance1 > distance2 then step2 must be < speed ( = dist2/dist1 )
   // and vice versa.
@@ -83,6 +100,36 @@ void set_target(int trg1, int trg2) {
     dstep1 = ((double)target_val1 - dval1) / abs((double)target_val2 - dval2) * (double)caret_speed;
     dstep2 = ((double)target_val2 - dval2) / abs((double)target_val2 - dval2) * (double)caret_speed;
   }
+
+/*
+    Serial.print("  dstep1:");
+    Serial.print((long)dstep1);
+    Serial.print("  dstep2:");
+    Serial.print((long)dstep2);
+    Serial.print("  ii:");
+    Serial.println(ii);
+*/
+}
+
+int step_ahead() {
+  
+    if(abs(dval1 - target_val1) > caret_speed + 1) { // pion
+      dval1 += dstep1;
+      val1 = (short) (dval1);
+    }
+    else {
+      val1 = target_val1;
+    }
+
+    if(abs(dval2 - target_val2) > caret_speed + 1) { // poziom
+      dval2 += dstep2;
+      val2 = (short) (dval2);
+    }
+    else {
+      val2 = target_val2;
+    }
+  
+    return (val1 == target_val1 && val2 == target_val2);  // TRUE = target reached;
 }
 
 // the loop routine runs over and over again forever:
@@ -90,60 +137,52 @@ void loop() {
   //delay(1);
   
   send_data(val1, val2);
-  if(ii >= 500) {
+  
+  if(ii >= 5000) {
     
-    // Randomize it HARD!
-    target_val2 = analogRead(0) * random(-32768, 32767);
-    randomSeed(analogRead(1));
-    target_val1 = random(-32768, 32767);
     ii = 0;
-    Serial.print("Setting target_val1 = ");
-    Serial.println(target_val1);
+    // caret_speed = random(5) + 5;
+
+    if(digitalRead(mode) == HIGH) {
+      if(ii == 0)
+        target_val1 = (random(2)*2-1) * 32767;
+        target_val2 = (random(2)*2-1) * 32767;
+
+        //target_val1 = (random(3)-1) * 32767;
+        //target_val2 = (random(3)-1) * 32767;
+    } else
+    {
+      // Randomize hard
+      //randomSeed(analogRead(1));
+      target_val1 = random(-32768, 32767);
+      target_val2 = random(-32768, 32767);
+sprintf(outdbg, "seed:%d  val1:%ld  val2:%ld", 1809, target_val1, target_val2);
+Serial.println(outdbg);
+    }
 
     // set target and respective steps to have both channels
     // reach their targets at the same time
     set_target(target_val1, target_val2);
   }
-  // if i == 0 do not do anything
+  
+  // if i == 0 do not do anything; just wait for reaching the target
   if (ii > 0) {
     ii++;
   }
  
-  if(digitalRead(mode) == HIGH) {
-    if(ii == 0) {
-      val1 = random(65535)-32767;
-      val2 = random(65535)-32767;
-    }
+ 
+  if( step_ahead() ) { // TRUE = target reached
+
+/*
+sprintf(outdbg, "ii:%d  val1:%d  trg1:%ld  dstep1:%ld    val2:%d  trg2:%ld  dstep2:%ld", 
+                ii, 
+                val1, target_val1, (long)(dstep1*100), 
+                val2, target_val2, (long)(dstep2*100));
+Serial.println(outdbg);
+*/
+    if(ii == 0)
+      ii = 1; // bump it to make it counting
   }
-  else {  
-
-    /*    
-    if(val1 >=32600)  // pion
-      val1 = 0x8000;
-    else
-      val1 += 10;
-
-    if(val2 >=32600)  // poziom
-      val2 = 0x8000;
-    else
-      val2 += 10;
-    */
-    
-    if(abs(dval1 - target_val1) > caret_speed + 1) { // pion
-      dval1 += dstep1;
-    }
-    else
-    if(ii == 0)
-      ii = 1;  // bump ii to make it counting
-
-    if(abs(dval2 - target_val2) > caret_speed + 1)  // poziom
-      dval2 += dstep2;
-    else
-    if(ii == 0)
-      ii = 1;  // bump ii to make it counting
-    
-    val1 = (short) (dval1);
-    val2 = (short) (dval2);
 
 /*
     Serial.print((long)target_val1);
@@ -156,11 +195,4 @@ void loop() {
     Serial.print("  ");
     Serial.println(val1);
 */
-
-   // val1 = (short) (target_val1 - 32768);
-   // val2 = (short) (target_val2 - 32768);
-    
-   // val1 = (short) (0 - 32768);
-   // val2 = (short) (random(65535) - 32768);
-  }
 }
