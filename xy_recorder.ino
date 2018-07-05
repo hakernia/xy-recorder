@@ -1,8 +1,8 @@
 /*
 
-Recorder XY v4 + dial controller + ringer
+Recorder XY v4 + dial controller + ringer + LED WS2812b
 Getting rid of the software tones. This shit stopped working after compiler upgrade
-   (possibly the better optimization screwed delay loops) and morover 
+   (possibly the better optimization screwed delay loops) and morover
    it causes strange troubles (uP gets spinning so that reset does not help).
    No point to investigate it.
 
@@ -10,25 +10,38 @@ v02 - dodane rozne telefony
  */
 
 #include <Wtv020sd16p.h>
+#include "FastLED.h"
 
 #undef DEBUG_DAC
 #undef DEBUG_DIAL
 #undef DEBUG_STORY
 
 
+// LEDs pin
+#define NUM_LEDS 4
+#define LED_DATA_PIN 5
+// Define the array of leds
+CRGB leds[NUM_LEDS];
+CRGB leds_target[NUM_LEDS];
+CRGB leds_saved[NUM_LEDS];
+int led_loop = 1;
+int led_loop_delay = 0;
+int led_target_delay = 20;
+char led_run_flag = 0;  // 0 - LEDs are still; 1 - LEDS change color
+
 // wtv020 pin
-int resetPin = 10; //5;  //2 
-int clockPin = 11; //6; //3;  
-int dataPin =  12; //9;  //4;  
-int busyPin = 19;  //5;  // not used if async play only
+#define WTV_RESET_PIN   10 //5;  //2
+#define WTV_CLOCK_PIN   11 //6; //3;
+#define WTV_DATA_PIN    12 //9;  //4;
+#define WTV_BUSY_PIN    19 //5;  // not used if async play only
 
 // init wtv management object
-Wtv020sd16p wtv020sd16p(resetPin,clockPin,dataPin,busyPin);
+Wtv020sd16p wtv020sd16p(WTV_RESET_PIN, WTV_CLOCK_PIN, WTV_DATA_PIN, WTV_BUSY_PIN);
 
 #define SPK_UNKNOWN_NUMBER  10
 #define SPK_ZERO  0
 #define SPK_PL  0
-#define SPK_EN 20
+#define SPK_EN 20l
 #define SPK_SP 40
 
 
@@ -40,9 +53,12 @@ int mode = 5;  //12;   // input: 0 - work, 1 - test
 int powerOff = 6;  //9;  // 0 - plotter ON, 1 - plotter OFF
 
 // DAC pins
-int ws = 2;
-int bck = 3;
-int data = 4;
+//int ws = 2;
+//int bck = 3;
+//int data = 4;
+#define DAC_WS_PIN   2
+#define DAC_BCK_PIN  3
+#define DAC_DATA_PIN  4
 
 // dial pins
 int dialInputPin = 8;  //7
@@ -75,17 +91,23 @@ char outdbg[300];
 
 
 
+// Event Types
 
 #define EVT_01_BURPS_CALLING    1
 #define EVT_02_DEVILS_CALLING   2
-#define EVT_03                  3
+#define EVT_03_NUMBERS_CALLING  3
 
 // Time variables
 unsigned long  secondsFromMidnight0;
 unsigned long  currentEventStart = -1;
 unsigned long  currentEventDuration = 20;
-unsigned char  currentEventId;
+unsigned char  currentEventType;
+unsigned char  currentEventIdx;
 unsigned char  incoming_call = 0;  // false - dialed call, true - incoming call
+
+
+
+void deleteAllEvents();
 
 
 // DAC functions
@@ -103,11 +125,11 @@ void send_data(short value_l, short value_r) {
 
     for (ff=0; ff < 16; ff++)
     {
-      digitalWrite(bck, LOW);  // prepare to send data
+      digitalWrite(DAC_BCK_PIN, LOW);  // prepare to send data
       if(ff == 15)
-        digitalWrite(ws, ch);  // select channel (0-left,1-right)
-      digitalWrite(data, (value & 0x8000) > 0);  // set bit of data
-      digitalWrite(bck, HIGH);  // send the bit of data
+        digitalWrite(DAC_WS_PIN, ch);  // select channel (0-left,1-right)
+      digitalWrite(DAC_DATA_PIN, (value & 0x8000) > 0);  // set bit of data
+      digitalWrite(DAC_BCK_PIN, HIGH);  // send the bit of data
       value <<= 1;
     }
   }
@@ -115,10 +137,10 @@ void send_data(short value_l, short value_r) {
 
 
 void set_target(int trg1, int trg2) {
-  
+
   target_val1 = trg1;
   target_val2 = trg2;
-  
+
   // set step so that both arrive the target at the same time
   // if distance1 > distance2 then step2 must be < speed ( = dist2/dist1 )
   // and vice versa.
@@ -126,7 +148,7 @@ void set_target(int trg1, int trg2) {
     dstep1 = ((double)target_val1 - dval1) / abs((double)target_val1 - dval1) * (double)caret_speed;
     dstep2 = ((double)target_val2 - dval2) / abs((double)target_val1 - dval1) * (double)caret_speed;
   }
-  else 
+  else
   if(abs((double)target_val2 - dval2) > 0) {
     dstep1 = ((double)target_val1 - dval1) / abs((double)target_val2 - dval2) * (double)caret_speed;
     dstep2 = ((double)target_val2 - dval2) / abs((double)target_val2 - dval2) * (double)caret_speed;
@@ -143,7 +165,7 @@ void set_target(int trg1, int trg2) {
 }
 
 int step_ahead() {
-  
+
     if(abs(dval1 - target_val1) > caret_speed + 1) { // pion
       dval1 += dstep1;
       val1 = (short) (dval1);
@@ -159,7 +181,7 @@ int step_ahead() {
     else {
       val2 = target_val2;
     }
-  
+
     return (val1 == target_val1 && val2 == target_val2);  // TRUE = target reached;
 }
 
@@ -172,7 +194,7 @@ int next_test_mode_target() {
     static int arrived = 0;  // 0 - cross, 1 - V or H
 
 #ifdef DEBUG_DAC
-    sprintf(outdbg, "next test target\n  in: %d %d   %d %d", 
+    sprintf(outdbg, "next test target\n  in: %d %d   %d %d",
                     val1, target_val1, val2, target_val2);
     Serial.println(outdbg);
 #endif
@@ -181,7 +203,7 @@ int next_test_mode_target() {
         target_val1 = -sign(target_val1) * 32767;
     if(abs(target_val2) != 32767)
         target_val2 = -sign(target_val2) * 32767;
-        
+
     if(arrived) {
         // arrived V or H, next go across
         // now change both X and Y
@@ -230,11 +252,11 @@ int readDialInputPin()
   static int lastButtonState = LOW;
   static unsigned long lastDebounceTime = 0;
   int reading = digitalRead(dialInputPin);
-  
-  if (reading != lastButtonState) 
+
+  if (reading != lastButtonState)
     lastDebounceTime = millis();
-  if ((millis() - lastDebounceTime) > debounceDelay) 
-    if (reading != buttonState) 
+  if ((millis() - lastDebounceTime) > debounceDelay)
+    if (reading != buttonState)
       buttonState = reading;
   lastButtonState = reading;
   return buttonState;
@@ -254,7 +276,7 @@ int dialPinStateChanged()
   static long endHighStateTime;
 
   int change = false;
-  
+
   if(readDialInputPin() == LOW && lastDialPinState == HIGH)
   {
     // Serial.println("H/L");
@@ -286,14 +308,14 @@ int dialPinStateChanged()
 char dialDigits[MAX_DIAL_NUMBER_LEN+1];  // dialed digits buffer
 int  dialDigitsNum = -2;    // dialed digits count
 
-void resetDialDigits() {
-  dialDigitsNum = -1;
-  memset(dialDigits, 0, sizeof(dialDigits));
+void resetDialDigits(char num) {
+  dialDigitsNum = num - 1;
+  memset(&dialDigits[num], 0, sizeof(dialDigits)-num);
 }
 
 // Detects long unchanged state periods.
 // Doeas not wait. Returns instantly. Must be run in endless loop.
-// returns 
+// returns
 //      0 - picked up; no digits dialed yet
 //    > 0 - number of digits dialed
 //    < 0 - hanged up; negative number of dialed digits decreased by 1
@@ -302,10 +324,10 @@ int dialDigitDetected()
 {
   static int  dialPhase;             // 0-idle (hanged up); 1-picked up; 2-pulsing
   //static long resetDelayDial = 100;  // pulse length threshold (ms)
-  
+
   static long lastDialPinChangeTime = 0;
   static int  dialCounter; // keeps current digit value during pulsing phase
-  
+
   // this part checks if dial eom condition hapened
   if(millis() - lastDialPinChangeTime > RESET_DELAY_DIAL)
   {
@@ -318,7 +340,7 @@ int dialDigitDetected()
                 // idle + H/L => earphone picked up
                 // dialing did not start yet
                 //dialDigitsNum = -1;  // clear digits counter
-                resetDialDigits();
+                resetDialDigits(0);
                 dialPhase = 1;       // set "earphone up" phase
               }
               break;
@@ -349,14 +371,14 @@ int dialDigitDetected()
     lastDialPinChangeTime = millis();
     return dialDigitsNum + 1;
   }
-  
+
   if(dialPinStateChanged())
   {
     lastDialPinChangeTime = millis(); // for the long state detection
     switch(dialPhase)
     {
       case 1:  // earphone up phase
-              if(lastDialPinState == HIGH) { 
+              if(lastDialPinState == HIGH) {
                                      // L/H => first pulse arriving or hanging up
                 dialCounter = 0;     // reset pulse counter
               }
@@ -375,8 +397,8 @@ int dialDigitDetected()
 }
 
 void makeUpDialDigits(char *buf) {
-  dialDigitsNum = strlen(buf);
-  strncpy(dialDigits, buf, dialDigitsNum);
+  dialDigitsNum = strlen(buf) - 1;
+  strncpy(dialDigits, buf, dialDigitsNum + 1);
 }
 // END OF DIAL WHEEL ROUTINES
 
@@ -395,10 +417,10 @@ void setTone(int mode) {
   static int full_period;
   static int phase;
   static int phase_step;
-  
+
   phase += phase_step;
   phase %= full_period;
-  
+
   switch(mode) {
     case TONE_NONE:
       duty = 1;
@@ -436,6 +458,23 @@ void setTone(int mode) {
 
 
 
+void setColorAllLEDs(char r, char g, char b) {
+            leds_target[0].setRGB(r,g,b);
+            leds_target[1].setRGB(r,g,b);
+            leds_target[2].setRGB(r,g,b);
+            leds_target[3].setRGB(r,g,b);
+            led_loop = 200;
+            led_run_flag = 1;
+}
+
+void saveCurrentAllLEDs() {
+    memcpy(leds_saved, leds, sizeof(leds_saved));
+}
+void restoreSavedAllLEDs() {
+    memcpy(leds_target, leds_saved, sizeof(leds_target));
+    led_loop = 200;
+    led_run_flag = 1;
+}
 
 // SW SIGNAL ROUTINES
 #define  MAX_INPLEN  50
@@ -445,6 +484,7 @@ unsigned char snd;  // global index in sound[]
 // 12 - trzask
 // 13 - sygnal nie ma takiego numeru
 // 14 - busy
+// 15 - kill light
 unsigned int sound_answer[]    = {11,1000,12,100,0,0};  // [1]:200-250, [4]-effect [5]-effect duration
 unsigned int sound_busy[]      = {14,10000, 0,0};
 unsigned int sound_unknownum[] = {13,500, 13,500, 13,500, 14,1000, 0,0};
@@ -498,10 +538,34 @@ void effect(int effectNumber) {
         case 14:
             setTone(TONE_BUSY);
             break;
+        case 15: // kill light
+            setColorAllLEDs(0,0,0);
+            break;
+        case 16: // white light
+            setColorAllLEDs(255,255,255);
+            break;
+        case 17: // red light
+            setColorAllLEDs(255,0,0);
+            break;
+        case 18: // green light
+            setColorAllLEDs(0,255,0);
+            break;
+        case 19: // blue light
+            setColorAllLEDs(0,0,255);
+            break;
+        case 20: // kill all events
+            deleteAllEvents();
+            break;
+        case 21: // save current light
+            saveCurrentAllLEDs();
+            break;
+        case 22: // restore saved light
+            restoreSavedAllLEDs();
+            break;
         default:
             if(effectNumber >= 1000)
                 wtv020sd16p.asyncPlayVoice(effectNumber - 1000);
-                
+
         dum1 = dum;  // anti optimizer
       }
 }
@@ -516,7 +580,7 @@ void beep(unsigned int *input) {
   static unsigned int soundlen;
   static unsigned char outlevel;
   unsigned int inplen = 0;
-  
+
   if(*input > 0) {
       for(int ff=1; ff<MAX_INPLEN; ff++)
       if(input[ff] == 0) {
@@ -524,7 +588,7 @@ void beep(unsigned int *input) {
           break;
       }
   }
-  
+
   if(*input == 1) {
       soundlen = 0;
       return;
@@ -533,7 +597,7 @@ void beep(unsigned int *input) {
   // setup sound
   if(inplen > 0) {
     memset(freq, 0, sizeof(freq));
-    // read input tones 
+    // read input tones
     for(int ff=0; ff<inplen; ff++) {
       freq[ff] = input[ff*2];
       dur[ff] = input[ff*2+1];
@@ -556,7 +620,7 @@ void beep(unsigned int *input) {
     phase = 0;
     effect(curNoteVal);
   }
-  
+
   // play sound
   if(curNoteIdx < soundlen) {
       phase++;
@@ -636,72 +700,94 @@ void addSoundBusy() {
 // TIME MANAGEMENT FUNCTIONS
 
 unsigned long lastMillis = 0;
+char hhmmss[7];
 long timeIn(char days, char hrs, char mins, char secs) {
   return days * 60*60*24 + hrs * 60*60 * mins * 60 + secs;
 }
+// get time as a hhmmss string
+void get_hhmmss(char hhmmss[7], unsigned long secondsFromMidnight0) {
+  //const char hhmmss[7];
+  int tmp_int;
+  secondsFromMidnight0 %= 86400;
+  tmp_int = secondsFromMidnight0 / 3600;
+  sprintf(&hhmmss[0], "%02d", tmp_int);
+  tmp_int = (secondsFromMidnight0 % 3600) / 60;
+  sprintf(&hhmmss[2], "%02d", tmp_int);
+  tmp_int = (secondsFromMidnight0 % 3600) % 60;
+  sprintf(&hhmmss[4], "%02d", tmp_int);
+}
 
-unsigned char cevts;  // temp counter of events being currently active 
+unsigned char cevts;  // temp counter of events being currently active
 unsigned char evt_num;  // temp number of event being processed
 #define MAX_EVENTS  10
 unsigned long eventStart[MAX_EVENTS];
 unsigned int eventDuration[MAX_EVENTS];
-unsigned char eventType[MAX_EVENTS];  // 0-execute once, 1-recurring daily
-unsigned char eventId[MAX_EVENTS];
+unsigned char eventRecurrence[MAX_EVENTS];  // 0-execute once, 1-recurring daily
+unsigned char eventType[MAX_EVENTS];
 unsigned char eventCount;
 
-// eventId == 0 - no event
+// eventType == 0 - no event
 
-#define EVT_TYPE_ONCE              0
-#define EVT_TYPE_RECURRING_DAILY   1
-#define EVT_TYPE_RECURRING_HOURLY  2
+#define EVT_ONCE              0
+#define EVT_RECURRING_DAILY   1
+#define EVT_RECURRING_HOURLY  2
 
 char scheduleEvent(unsigned long newEventStart,
                    unsigned long newEventDuration,
-                   unsigned char newEventType,
-                   unsigned char newEventId) {
+                   unsigned char newEventRecurrence,
+                   unsigned char newEventType) {
     unsigned char evt;
     for(evt=0; evt<MAX_EVENTS; evt++) {
       if(eventStart[evt] == -1) {
         eventStart[evt] = newEventStart;
         eventDuration[evt] = newEventDuration;
+        eventRecurrence[evt] = newEventRecurrence;
         eventType[evt] = newEventType;
-        eventId[evt] = newEventId;
         return true;
       }
     }
     return false;
 }
+// delete event by evt index
 void deleteEvt(unsigned char evt) {
     eventStart[evt] = -1;
     eventDuration[evt] = 0;
+    eventRecurrence[evt] = 0;
     eventType[evt] = 0;
-    eventId[evt] = 0;
+}
+void deleteAllEvents() {
+    unsigned char evt;
+    for(evt=0; evt<MAX_EVENTS; evt++) {
+      if(eventRecurrence[evt] > 0)
+        deleteEvt(evt);
+    }
 }
 void finalizeEvt(unsigned char evt) {
-   if(eventType[evt] == EVT_TYPE_ONCE) { 
+   if(eventRecurrence[evt] == EVT_ONCE) {
        deleteEvt(evt);
    } else
-   if(eventType[evt] == EVT_TYPE_RECURRING_DAILY) { 
+   if(eventRecurrence[evt] == EVT_RECURRING_DAILY) {
        eventStart[evt] += 86400;  // move start 24 hrs
    } else
-   if(eventType[evt] == EVT_TYPE_RECURRING_HOURLY) { 
+   if(eventRecurrence[evt] == EVT_RECURRING_HOURLY) {
        eventStart[evt] += 3600;  // move start 1 hr
    }
 }
-char deleteEvent(unsigned char deleteEventId) {
+// delete event by eventType
+char deleteEvent(unsigned char deleteEventType) {
     unsigned char evt;
     for(evt=0; evt<MAX_EVENTS; evt++) {
-      if(eventId[evt] == deleteEventId) {
+      if(eventType[evt] == deleteEventType) {
           deleteEvt(evt);
           return true;
       }
     }
     return false;
 }
-char finalizeEvent(unsigned char finalizeEventId) {
+char finalizeEventType(unsigned char et) {
     unsigned char evt;
     for(evt=0; evt<MAX_EVENTS; evt++) {
-      if(eventId[evt] == finalizeEventId) {
+      if(eventType[evt] == et) {
            finalizeEvt(evt);
            return true;
       }
@@ -727,7 +813,8 @@ unsigned char countCurrentEvents() {
 char getCurrentEvent(unsigned char event_num,
                      unsigned long *foundEventStart,
                      unsigned long *foundEventDuration,
-                     unsigned char *foundEventId) {
+                     unsigned char *foundEventType,
+                     unsigned char *foundEventIdx) {
     unsigned char evt;
     unsigned char evt_num = 0;
     for(evt=0; evt<MAX_EVENTS; evt++) {
@@ -736,7 +823,8 @@ char getCurrentEvent(unsigned char event_num,
         if(evt_num++ == event_num) {
           *foundEventStart = eventStart[evt];
           *foundEventDuration = eventDuration[evt];
-          *foundEventId = eventId[evt];
+          *foundEventType = eventType[evt];
+          *foundEventIdx = evt;
           return true;
         }
       }
@@ -760,7 +848,7 @@ unsigned short ring(unsigned short ringDur, unsigned short gapDur) {
     ring_dur = ringDur;
     gap_dur = gapDur;
   }
-  
+
   if(millis() - lastMillis < ring_dur) {
       digitalWrite(ringerPin, HIGH);
       delay(ring_dur);
@@ -778,7 +866,8 @@ unsigned short ring(unsigned short ringDur, unsigned short gapDur) {
 
 // the setup routine runs once when you press reset:
 void setup() {
-  pinMode(led, OUTPUT); 
+  int ff;
+  pinMode(led, OUTPUT);
 
   // dial pins
   pinMode(dialInputPin, INPUT);
@@ -788,16 +877,16 @@ void setup() {
   digitalWrite(ringerPin, LOW);  // LOW = do not ring
 
   // Pins for TDA1543 DAC
-  pinMode(ws, OUTPUT);     
-  pinMode(bck, OUTPUT);     
-  pinMode(data, OUTPUT);     
+  pinMode(DAC_WS_PIN, OUTPUT);
+  pinMode(DAC_BCK_PIN, OUTPUT);
+  pinMode(DAC_DATA_PIN, OUTPUT);
   randomSeed(1809);
 
   // plotter pin
-  pinMode(mode, INPUT);  // 0 - work, 1 - test
+  //pinMode(mode, INPUT);  // 0 - work, 1 - test
   pinMode(powerOff, OUTPUT);  // 0 - plotter power ON
   set_target(0, 0);
-  
+
   // Initializes the wtv sound module
   wtv020sd16p.reset();
 
@@ -806,9 +895,17 @@ void setup() {
 
   memset(eventStart, -1, sizeof(eventStart));
   memset(eventDuration, 0, sizeof(eventDuration));
-  memset(eventId, 0, sizeof(eventId));
-  
-  Serial.begin(9600); 
+  memset(eventType, 0, sizeof(eventType));
+
+
+  FastLED.addLeds<NEOPIXEL, LED_DATA_PIN>(leds, NUM_LEDS);
+      for(ff=0; ff<NUM_LEDS; ff++) {
+        leds[ff] = CRGB::White;
+      }
+  FastLED.show();
+
+
+  Serial.begin(9600);
 }
 
 
@@ -828,22 +925,162 @@ void setup() {
   };
 
 
+
+
+
+
+
+//  MASTERMIND
+
+char ff;
+char gg;
+char hh;
+int tmp_int;
+int tmp_int1;
+
+char mastermind_num_digits      = 4;  // max 9
+char mastermind_max_digit_value = 4;  // max 9
+long mastermind = 0,                // the riddle
+     mastermind_ext = 0,            // if non 0 it is played rather than new random num
+     mastermind_result = 0;         // result of current round
+
+long mastermind_init(char num_digits, char max_digit_value) {
+  char ff;
+  long mastermind = 0;
+    for(ff=0; ff < num_digits; ff++) {
+        mastermind *= 10;
+        mastermind += random(max_digit_value) + 1;
+    }
+    return mastermind;
+}
+// say long int starting from the least significant digit
+void say_long_backwards(long number, char num_digits) {
+  long powerof10 = 1;
+
+    for(ff=0; ff < num_digits; ff++) {
+        addSound( 1000+ ((number % (powerof10 * 10)) / powerof10), 100);
+        powerof10 *= 10;
+    }
+}
+long mastermind_check(char num_digits, char *digits) {
+    long tmp_long = mastermind;   // modifiable copy of hidden digits
+    long tmp_long2 = 1;
+    long tmp_long1 = 1;
+    long mastermind_result = 0;
+    char ff, gg;
+
+    // find digits present in correct positions
+    for(ff=0; ff < num_digits; ff++) {
+
+        if(digits[ff]-'0' == (tmp_long % (tmp_long1*10)) / tmp_long1) {
+
+            tmp_long -= ((tmp_long % (tmp_long1*10)) / tmp_long1) * tmp_long1;    // remove digit from tmp_long
+          //  dialDigits[ff] = 0;
+            hh = ff;
+            digits[hh] = 0;
+            mastermind_result += 2 * tmp_long2;
+            tmp_long2 *= 10;
+
+        }
+        tmp_long1 *= 10;
+
+    }
+    // find present in incorrect positions
+    tmp_long1 = 1;
+    for(ff=0; ff < num_digits; ff++) {       // loop through hidden digits
+        for(gg=0; gg < num_digits; gg++) {   // loop through dialed digits
+
+            if(digits[gg] > 0 && digits[gg]-'0' == ((tmp_long % (tmp_long1*10)) / tmp_long1)) {
+
+                tmp_long -= ((tmp_long % (tmp_long1*10)) / tmp_long1) * tmp_long1;    // remove digit from tmp_long
+                 mastermind_result += tmp_long2;
+                 //dialDigits[gg] = 0;    // gg fails! why???
+                 hh = gg;
+                 digits[hh] = 0;
+                 tmp_long2 *= 10;
+            }
+        }
+        tmp_long1 *= 10;  // modify in order to get the next hidden digit
+    }
+
+  return mastermind_result;
+}
+
+//  END OF MASTERMIND
+
+
+
+char secret_number[10];
+char strlen_secret_number = 0;
+
+
+
+#define NR_MASTERMIND_SETUP   0
+#define NR_PIS                1
+#define NR_RADIO_MARYJA       2
+#define NR_REJA               3
+#define NR_RYKI               4
+#define NR_BIURO_NUMEROW      5
+#define NR_GOTOWANIE          6
+#define NR_POGODA             7
+#define NR_MASTERMIND         8
+#define NR_PROGRAM_TV         9
+#define NR_ZEGARYNKA          10
+#define NR_HOROSKOP           11
+#define NR_BAJKA              12
+#define NR_WYNIKI_LOTTO       13
+#define NR_BUDZENIE           14
+#define NR_STRAZ_MIEJSKA      15
+#define NR_POGOT_ENERG        16
+#define NR_POGOT_GAZ          17
+#define NR_POGOT_WODKAN       18
+#define NR_POLICJA            19
+#define NR_STRAZ_POZARNA      20
+#define NR_POGOTOWIE          21
+char* nr[] = {"225182200",  // NR_MASTERMIND_SETUP  w realu to numer loterii
+              "226215035",  // NR_PIS
+              "5665523",    // NR_RADIO_MARYJA
+              "713216216",  // NR_REJA
+              "757173017",  // NR_RYKI
+              "913",        // NR_BIURO_NUMEROW
+              "920",        // NR_GOTOWANIE
+              "921",        // NR_POGODA
+              "923",        // NR_MASTERMIND
+              "925",        // NR_PROGRAM_TV
+              "926",        // NR_ZEGARYNKA
+              "927",        // NR_HOROSKOP
+              "928",        // NR_BAJKA
+              "931",        // NR_WYNIKI_LOTTO
+              "9497",       // NR_BUDZENIE
+              "986",        // NR_STRAZ_MIEJSKA
+              "991",        // NR_POGOT_ENERG
+              "992",        // NR_POGOT_GAZ
+              "994",        // NR_POGOT_WODKAN
+              "997",        // NR_POLICJA
+              "998",        // NR_STRAZ_POZARNA
+              "999",        // NR_POGOTOWIE
+              };
+
+long tmp_long;
+long tmp_long1;
+long tmp_long2;
+
 void loop() {
   // dac variables
   static int ii;
-  
+
   // dial wheel variables
   int dc = 0;
   static int last_dc = 0;
 //  static char sound[MAX_INPLEN];  // input buffer for beep()
   static unsigned int zeroSound[2] = {0,0};
   static char pis_sequence = 0;  // used to unlock sections depending on pis talk
-  
-  
+
+
   // DAC controlling section
   // send data to DAC
   send_data(val1, val2);
-  
+
   if(story_length != 0) {
   if(ii >= 5000) {
     ii = 0;
@@ -852,7 +1089,7 @@ void loop() {
     } else {
         target_val1 = random(-32768, 32767);
         target_val2 = random(-32768, 32767);
-        
+
         if(story_length > 0)
             story_length--;
     }
@@ -872,7 +1109,7 @@ void loop() {
     digitalWrite(powerOff, 1);  // turn plotter OFF
 
   // End of DAC controlling section
-  
+
 
 
 
@@ -892,9 +1129,9 @@ void loop() {
   if(dc < 0)  // do only if hanged up
   if((cevts = countCurrentEvents()) > 0) {
     for(evt_num=0; evt_num < cevts; evt_num++) {
-      if(getCurrentEvent(evt_num, &currentEventStart, &currentEventDuration, &currentEventId)) {
+      if(getCurrentEvent(evt_num, &currentEventStart, &currentEventDuration, &currentEventType, &currentEventIdx)) {
         // one of the currently active events has been fetched
-        switch(currentEventId) {
+        switch(currentEventType) {
           case EVT_01_BURPS_CALLING: // dzwonia pobekiwania
                ring(1000, 4000);  // ring duration, gap duration
                break;
@@ -903,12 +1140,15 @@ void loop() {
                ring(1000, 4000);
                break;
           */
+          case EVT_03_NUMBERS_CALLING: // dzwonią numery
+               ring(1000, 4000);  // ring duration, gap duration
+               break;
         }
       };
     }
   }
   else {
-      currentEventId = 0; // no current events!
+      currentEventType = 0; // no current events!
   }
   /*
   if(dc < 0)  // do only if hanged up
@@ -924,25 +1164,54 @@ void loop() {
 
 
 
+   // LED Light management
+
+   if(led_loop_delay == 0 && led_run_flag == 1) {
+     led_run_flag = 0;
+     for (ff=0; ff < NUM_LEDS; ff++)
+         if(leds_target[ff].r != leds[ff].r ||
+            leds_target[ff].g != leds[ff].g ||
+            leds_target[ff].b != leds[ff].b ) {
+             //leds[ff].r += (leds_target[ff].r - leds[ff].r) / led_loop;
+             leds[ff].r = lerp8by8(leds_target[ff].r, leds[ff].r, 254);
+             //leds[ff].g += (leds_target[ff].g - leds[ff].g) / led_loop;
+             leds[ff].g = lerp8by8(leds_target[ff].g, leds[ff].g, 254);
+             //leds[ff].b += (leds_target[ff].b - leds[ff].b) / led_loop;
+             leds[ff].b = lerp8by8(leds_target[ff].b, leds[ff].b, 254);
+            led_run_flag = 1;
+         }
+     if(led_run_flag) {
+       led_loop_delay = led_target_delay;
+       if(led_loop > 1)
+         led_loop--;
+     }
+     FastLED.show();
+   }
+   if(led_run_flag)
+     led_loop_delay--;
+
+   // End of LED light management
+
+
 
   // Dial wheel controlling section
-  
+
   digitalWrite(led, digitalRead(dialInputPin));   // turn the LED on (HIGH is the voltage level)
-     
+
   beep(zeroSound);     // manage tones generated by uP
   setTone(-1);  // manage tones generated by external device
-  
+
   if(dc != last_dc)  // enter only if new digit dialed or handset status changed
   {
     last_dc = dc;
 
 
 
-    
+
     if(dc < 0) {
       #ifdef DEBUG_DIAL
       Serial.print(dc);
-      Serial.println(": Hanged up.");      
+      Serial.println(": Hanged up.");
       #endif
       setTone(TONE_NONE);
       memset(sound, 0, sizeof(sound));
@@ -953,14 +1222,14 @@ void loop() {
     }
     else
     {
-      // Picked up. 
+      // Picked up.
       // implement reactions to calling in events here
       // they usually do not depend on dialed numbers
 
     if (1)
     {
 
-        
+
     if(dc == 0) {  // nothing dialed yet
       #ifdef DEBUG_DIAL
       Serial.print(dc);
@@ -970,26 +1239,35 @@ void loop() {
 
 
 
-      if(currentEventId == EVT_01_BURPS_CALLING) {
+      if(currentEventType == EVT_01_BURPS_CALLING) {
         /*
                sound[0] = 1056;  // ziewy
-               sound[1] = 10000;  
+               sound[1] = 10000;
                sound[2] = 14;   // busy
                sound[3] = 20000;
                beep(sound);
         */
         incoming_call = true;
-        finalizeEvent(EVT_01_BURPS_CALLING); // delete or reschedule, depending on eventType
-        currentEventId = 0;                // unmark current event, it has just been executed
+        //finalizeEventType(EVT_01_BURPS_CALLING); // delete or reschedule, depending on eventRecurrence
+        finalizeEvt(currentEventIdx); // delete or reschedule, depending on eventRecurrence
+        currentEventType = 0;                // unmark current event, it has just been executed
         makeUpDialDigits("757173017");     // this is the number that is calling
                                            // the next loop will get to proper dc > 0
-      } 
+      }
+      else
+      if(currentEventType == EVT_03_NUMBERS_CALLING) {
+        incoming_call = true;
+        finalizeEvt(currentEventIdx); // delete or reschedule, depending on eventRecurrence
+        currentEventType = 0;                // unmark current event, it has just been executed
+        makeUpDialDigits("9497");     // this is the number that is calling
+                                           // the next loop will get to proper dc > 0
+      }
       else  // no event of incoming call; perform the ready tone
         setTone(TONE_READY);
 
 
 
-        
+
     }
     if(dc > 0)
     {
@@ -997,10 +1275,10 @@ void loop() {
          setTone(TONE_NONE);
          memset(sound, 0, sizeof(sound));
          sound[0] = 1; // clear beeps
-         beep(sound);  
+         beep(sound);
       }
       // Put number driven commands here
-      
+
       if(strncmp(dialDigits, "4", 1) == 0) {
         /*
         memset(sound, 0, sizeof(sound));
@@ -1024,15 +1302,25 @@ void loop() {
             sound[6] = 14;   // busy
             sound[7] = 50;
             */
+            // addSound(15, 1);  // light off
             beep(sound);
+            /*
+            leds_target[0].setRGB(255,0,0);
+            leds_target[1].setRGB(255,0,0);
+            leds_target[2].setRGB(255,0,0);
+            leds_target[3].setRGB(255,0,0);
+            led_loop = 200;
+            led_run_flag = 1;
+            */
+
 
             //scheduledEventStart = secondsFromMidnight0 + timeIn(0, 0, 0, 20);
-            scheduleEvent(secondsFromMidnight0 + timeIn(0, 0, 0, 20), 20, 
-                          EVT_TYPE_RECURRING_HOURLY, 
+            scheduleEvent(secondsFromMidnight0 + timeIn(0, 0, 0, 20), 20,
+                          EVT_RECURRING_HOURLY,
                           EVT_01_BURPS_CALLING);
       }
       else
-      
+
       if(strncmp(dialDigits, "713215215", (dc < 9) ? dc : 9) == 0) {
         // catch prefix 713216216 + n + xxxx  -> n=1,2,3  xxxx=delay
         // set one of the three tones in "number not available"
@@ -1044,9 +1332,11 @@ void loop() {
             if(nn > 2) nn = 2;
             dels[nn] = del;
             dur = 50 * (10000 / del);
+            /*
             Serial.print(del);
             Serial.print("/");
             Serial.println(dur);
+            */
             /*
             for(int ff=0; ff<dur; ff++) {
               for(int t=0;t<del*1;t++) dum = dum+1-1;
@@ -1058,7 +1348,7 @@ void loop() {
         }
       }
       else
-      if(strncmp(dialDigits, "757173017", 9) == 0) {
+      if(strncmp(dialDigits, nr[NR_RYKI], 9) == 0) {
            // po sygnale ktos odbiera
                //memset(sound, 0, sizeof(sound));
                resetSound();
@@ -1067,12 +1357,13 @@ void loop() {
                    //addSoundArray(sound_answer);  // sygnal wolne, trzask
                    addSoundAnswer();
                }
+               addSound(15, 1); // light off
                addSound(1056, 10000);  // ziewy
                addSound(14, 20000);    // busy tone
                beep(sound);
       }
       else
-      if(strncmp(dialDigits, "226215035", 9) == 0) {  // pis
+      if(strncmp(dialDigits, nr[NR_PIS], 9) == 0) {  // pis
            // po sygnale ktos odbiera
                resetSound();
                if(!incoming_call) {
@@ -1080,22 +1371,22 @@ void loop() {
                }
                pis_sequence = random(5);
                //sound[4] = 1050+pis_sequence;  // pis
-               //sound[5] = 60000;  
+               //sound[5] = 60000;
                addSound(1050+pis_sequence, 6000);
                addSound(14, 2000);
                beep(sound);
       }
       else
-      if(strncmp(dialDigits, "5665523", 7) == 0) {  // rm
+      if(strncmp(dialDigits, nr[NR_RADIO_MARYJA], 7) == 0) {  // rm 5665523
            // po sygnale ktos odbiera
            if(dc == 9)  // wszystkie 9-cio cyfrowe nry zaczynajace sie od 5665523
            {
                resetSound();
                if(!incoming_call) {
                    addSoundAnswer();
-               }               
+               }
                sound[4] = 1055;  // trzy slowa do ojca prowadzacego
-               sound[5] = 20000;  
+               sound[5] = 20000;
                addSound(1055, 2000);
                addSound(14, 20000);
                beep(sound);
@@ -1103,7 +1394,7 @@ void loop() {
       }
       else
       if(strncmp(dialDigits, "0001", 4) == 0) {
-          if(dc >= 13) {        
+          if(dc >= 13) {
            // po sygnale ktos odbiera
                resetSound();
                if(!incoming_call) {
@@ -1124,54 +1415,273 @@ void loop() {
           }
       }
       else
-      if(pis_sequence == 3 && strncmp(dialDigits, "666", 3) == 0) {  // pis 3 = hymn
+      if(strncmp(dialDigits, "666", 3) == 0) {  // pis 3 = hymn
+        if(pis_sequence == 3) {
            // po sygnale ktos odbiera
+           resetSound();
+           if(!incoming_call) {
+            addSound(1057, 1000); // POWITANIE SZATANA
+           }
+           addSound(14, 20000);
+           beep(sound);
+        } else
+        {
+           resetSound();
+           if(!incoming_call) {
+            addSound(21,1);  // save light
+            addSound(17,1000); // red light
+            addSound(22,500); // savedlight
+           }
+           beep(sound);
+        }
+      }
+      else
+      if(strlen_secret_number > 0 && strncmp(dialDigits, secret_number, strlen_secret_number) == 0) {
                resetSound();
                if(!incoming_call) {
-                addSound(1057, 1000); // POWITANIE SZATANA
+                   addSound(11, random(1500)); // sygnal wolne
+                   addSound(1057, 1000); // POWITANIE SZATANA
                }
-               addSound(14, 20000);
                beep(sound);
       }
       else
-      if(strncmp(dialDigits, "922", 3) == 0) {  // wrozka
+      if(strncmp(dialDigits, nr[NR_BUDZENIE], 4) == 0) {  // budzenie
+        resetSound();
+        if(dc == 4) {
+            if(!incoming_call) {
+                addSound(11, random(1500)); // sygnal wolne
+            }
+            else { // incoming call
+                   // generate the secret number and say it
+                sprintf(secret_number, "888");
+                addSound(1008, 100);
+                addSound(1008, 100);
+                addSound(1008, 100);
+                for(ff=3; ff<9; ff++) {
+                    secret_number[ff] = '0' + random(10);
+                    addSound(1000 + secret_number[ff] - '0', 100);
+                }
+                secret_number[9]=0;
+                strlen_secret_number = strlen(secret_number);
+                addSound(14, 20000);  // busy
+            }
+        }
+        if(dc == 5 && !incoming_call) {
+          if(dialDigits[4] == '0') {
+            deleteEvent(EVT_03_NUMBERS_CALLING);
+          }
+          else {
+            scheduleEvent(secondsFromMidnight0 + timeIn(0, 0, 0, 25), 20,
+                          EVT_RECURRING_HOURLY,
+                          EVT_03_NUMBERS_CALLING);
+
+            // covering event
+            // it is scheduled a few seconds aahead of the above important one
+            // it must be scheduled after the real one, as the later the event the higher its priority
+            scheduleEvent(secondsFromMidnight0 + timeIn(0, 0, 0, 20), 20,
+                          EVT_RECURRING_HOURLY,
+                          EVT_01_BURPS_CALLING);
+          }
+          addSound(14, 20000);  // busy
+        }
+        beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, nr[NR_HOROSKOP], 3) == 0) {  // horoskop
            // po sygnale ktos odbiera
                resetSound();
                if(!incoming_call) {
                 addSound(1060 + random(3), 1000); // wrozby
                }
+               addSound(16, 1);  // white light
                addSound(14, 20000);
                beep(sound);
+               /*
+            leds_target[0].setRGB(255,255,255);
+            leds_target[1].setRGB(255,255,255);
+            leds_target[2].setRGB(255,255,255);
+            leds_target[3].setRGB(255,255,255);
+            led_loop = 200;
+            led_run_flag = 1;
+            */
+
       }
       else
-      if(strncmp(dialDigits, "926", 3) == 0) {
+
+
+      if(dc > 9 && strncmp(dialDigits, nr[NR_MASTERMIND_SETUP], 9) == 0) {
+        if(dc == 11) {
+          sscanf(&dialDigits[9], "%1d", &tmp_int); mastermind_num_digits = tmp_int;
+          sscanf(&dialDigits[10], "%1d", &tmp_int); mastermind_max_digit_value = tmp_int;
+          resetSound();
+          if(!incoming_call) {
+              // po sygnale ktos odbiera
+              //addSound(11, random(1500)); // sygnal wolne
+          }
+          mastermind_ext = mastermind_init(mastermind_num_digits, mastermind_max_digit_value);
+          say_long_backwards(mastermind_ext, mastermind_num_digits);  // say riddle
+          addSound(14, random(1500)); // sygnal zajęte
+          beep(sound);
+        }
+      }
+      else
+      if(dc == 9 && strncmp(dialDigits, nr[NR_MASTERMIND_SETUP], 9) == 0) {
+          resetSound();
+          if(!incoming_call) {
+              addSound(11, random(1500)); // sygnal wolne
+          }
+          beep(sound);
+      }
+      else
+
+
+      // MASTERMIND, 923
+      // MASTERMIND_NUM_DIGITS
+      // MASTERMIND_MAX_DIGIT_VALUE
+      if(mastermind > 0 && mastermind_result != 2222 &&
+         dc > 3 && strncmp(dialDigits, nr[NR_MASTERMIND], 3) == 0) {
+
+        // on eighth digit pretend there was only four
+        if(dc == 3 + mastermind_num_digits + 1) {
+           dialDigits[3] = dialDigits[3 + mastermind_num_digits];  // move eighth digit to fourth
+           resetDialDigits(4);  // pretend there are still just four digits dialed
+           dc = 4;  // first digit after the 3 for 923
+        }
+        // verify result if all digits dialed
+        if(dc == 3 + mastermind_num_digits) {
+
+        mastermind_result = mastermind_check(mastermind_num_digits, &dialDigits[3]);
+
+        // say results
+        resetSound();
+        say_long_backwards(mastermind_result, mastermind_num_digits);
+          // if correct, finish with busy signal
+          if(mastermind_result == 2222) {          // num digits!
+             mastermind = 0;      // clear riddle not to get here back without resetting the riddle
+             addSound(14, 20000); // busy
+          }
+          beep(sound);
+        }
+      }
+      else
+      if(dc == 3 && strncmp(dialDigits, nr[NR_MASTERMIND], 3) == 0) {
+          resetSound();
+          if(!incoming_call) {
+              // po sygnale ktos odbiera
+              addSound(11, random(1500)); // sygnal wolne
+              if(mastermind_ext > 0)
+                  mastermind = mastermind_ext;
+              else
+                  mastermind = mastermind_init(mastermind_num_digits, mastermind_max_digit_value);
+              mastermind_result = 0;
+              //say_long_backwards(mastermind, mastermind_num_digits);  // say riddle, for test only!
+          }
+          beep(sound);
+      }
+      // END OF MASTERMIND
+
+
+      else
+      if(dc > 3 && strncmp(dialDigits, nr[NR_ZEGARYNKA], 3) == 0) {  // setting time
+        if(dc == 7) { // hhmm
+          //tmp_int = strtol(&dialDigits[3], (char**)NULL, 10);
+          secondsFromMidnight0 = (secondsFromMidnight0 / 86400) * 86400;
+          sscanf(&dialDigits[3], "%2d", &tmp_long); secondsFromMidnight0 += (tmp_long * 3600);
+          sscanf(&dialDigits[5], "%2d", &tmp_long); secondsFromMidnight0 += (tmp_long * 60);
+/*
+          tmp_int = atoi(&dialDigits[3]);
+          secondsFromMidnight0 = timeIn(secondsFromMidnight0 / 86400, // current days
+                                 tmp_int / 60,  // hrs
+                                 tmp_int % 60,  // mins
+                                 0);            // secs
+  */
            // po sygnale ktos odbiera
                resetSound();
                if(!incoming_call) {
-                addSound(1015, 800); // miedzymiastowa, tylko testowo w tym miejscu
+                 addSound(14, 20000); // busy
                }
-               addSound(14, 20000);
                beep(sound);
+        }
       }
       else
-      if(strncmp(dialDigits, "928", 3) == 0) {
+      if(dc == 3 && strncmp(dialDigits, nr[NR_ZEGARYNKA], 3) == 0) {  // checking time
+        get_hhmmss(hhmmss, secondsFromMidnight0);
+           // po sygnale ktos odbiera
+               resetSound();
+               if(!incoming_call) {
+                 addSound(11, random(500)); // sygnal wolne
+               }
+               for(ff=0; ff < 6; ff++) {
+                 addSound(1000+(hhmmss[ff]-'0'), 100);
+               }
+               //addSound(14, 20000);
+               beep(sound);
+      }
+      // END OF ZEGARYNKA
+
+
+      else
+      if(strncmp(dialDigits, nr[NR_BAJKA], 3) == 0) {
            // po sygnale ktos odbiera
                resetSound();
                if(!incoming_call) {
                 addSound(1016, 8000); // mowi sie?, tylko testowo w tym miejscu
                }
-               addSound(14, 20000);
+               addSound(14, 20000);  // busy
                beep(sound);
       }
       else
-      if(strncmp(dialDigits, "713216216", 9) == 0) {
+      if(dc > 3 && dc <= 12 && strncmp(dialDigits, nr[NR_POGOT_ENERG], 3) == 0) {  // pogotowie energetyczne - kolor RBG
+        if(dc == 12) {
+          sscanf(&dialDigits[3], "%3d", &tmp_int); leds_target[0].r = tmp_int;
+          sscanf(&dialDigits[6], "%3d", &tmp_int); leds_target[0].g = tmp_int;
+          sscanf(&dialDigits[9], "%3d", &tmp_int); leds_target[0].b = tmp_int;
+          setColorAllLEDs(leds_target[0].r, leds_target[0].g, leds_target[0].b);
+          resetSound();
+          addSound(14, 20000);  // busy
+          beep(sound);
+        }
+      }
+      else
+      if(dc == 3 && strncmp(dialDigits, nr[NR_POGOT_ENERG], 3) == 0) {  // pogotowie energetyczne
+           // po sygnale ktos odbiera
+               resetSound();
+               if(!incoming_call) {
+                 resetSound();
+                 addSound(11, 500); // sygnal wolne
+                 addSound(1017, 500); // prosze czekac
+                 addSound(16, 1);  // white light
+               }
+               //addSound(14, 20000);  // busy
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, nr[NR_POLICJA], 3) == 0) {  // policja
+           // po sygnale ktos odbiera
+               resetSound();
+               if(!incoming_call) {
+                 resetSound();
+                 addSound(11, 500); // sygnal wolne
+                 addSound(20, 1); // delete all events
+                 addSound(11, 500); // sygnal wolne
+                 addSound(1017, 500); // prosze czekac
+                 addSound(19, 400);  // blue light
+                 addSound(15, 500);  // light off
+                 addSound(19, 400);  // blue light
+                 addSound(15, 500);  // light off
+               }
+               addSound(14, 20000);  // busy
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, nr[NR_REJA], 9) == 0) {
         // toggles DAC test mode
           setTestMode(-1);  // toggle test mode (DAC)
           #ifdef DEBUG_STORY
           Serial.print("Test Mode ");
           Serial.println(digitalRead(mode) == test_mode);
           #endif
-          // resetDialDigits(); 
+          // resetDialDigits(0);
           story_length = -1;
           setSoundTxt("01110141");
       }
@@ -1185,9 +1695,9 @@ void loop() {
            randomSeed(seed);
            story_length = random(20) + 3;
            setTestMode(1);
-           
+
            setSoundTxtSteady(dialDigits, 20);
-           // resetDialDigits(); 
+           // resetDialDigits(0);
           #ifdef DEBUG_STORY
           sprintf(outdbg, "seed %d, length %d", seed, story_length);
           Serial.println(outdbg);
@@ -1196,7 +1706,7 @@ void loop() {
       }
       else
       if(strncmp(dialDigits, "71", 2) == 0) {
-        // all 9 digit numbers starting 71 can be free or busy
+        // all 9 digit numbers starting with 71 can be free or busy
         if(dc == 9) {
            // po sygnale ktos odbiera
            if(!incoming_call)
@@ -1211,7 +1721,7 @@ void loop() {
            else {
                setTone(TONE_BUSY); // zajete
            }
-           //resetDialDigits(); 
+           //resetDialDigits(0);
         }
       }
       else
@@ -1247,12 +1757,12 @@ void loop() {
 #endif
       } // dc > 0
 
-    } // else currentEventId ==
-    
+    } // else currentEventType ==
+
     } // else dc < 0
-    
+
   } // dc != lastdc
 
   // End of dial wheel controlling section
-  
+
 }
