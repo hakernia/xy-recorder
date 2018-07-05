@@ -1,6 +1,8 @@
 /*
 
 Recorder XY v4 + dial controller
+
+v02 - dodane rozne telefony
  */
 
 #include <Wtv020sd16p.h>
@@ -413,10 +415,20 @@ void setTone(int mode) {
 
 // SW SIGNAL ROUTINES
 
-char sound[200];  // buffer of digits: pitch, length
+unsigned int sound[200];  // buffer of digits: pitch, length
+// 11 - sygnal wolne
+// 12 - trzask
+// 13 - sygnal nie ma takiego numeru
+// 14 - busy
+unsigned int sound_answer[]    = {11,10000,12,100,0,0,14,50, 0,0};  // [1]:200-250, [4]-effect [5]-effect duration
+unsigned int sound_busy[]      = {14,10000, 0,0};
+unsigned int sound_unknownum[] = {13,5000, 13,5000, 13,5000, 14,10000, 0,0};
+
+
 void effect(int effectNumber) {
   int del = dels[0];
   int dur;
+  int dum1 = 2;
       setTone(TONE_NONE);  // initially make it silent
       switch(effectNumber) {
         case 11:  // czekanie na podniesienie sluchawki
@@ -430,26 +442,26 @@ void effect(int effectNumber) {
         case 13:  // nie ma takiego numeru
             dur = 50 * (10000 / del);
             for(int ff=0; ff<dur; ff++) {
-              for(int t=0;t<del*1;t++) dum = dum+1-1;
+              for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum)); dum = dum+dum1-1;
                   digitalWrite(soundOutputPin, LOW);
-              for(int t=0;t<del*1;t++) dum = dum+1-1;
+              for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum));dum1 = dum1+dum+1-1;
                   digitalWrite(soundOutputPin, HIGH);
             }
             dur = del - 1 + 1;
             del = dels[1];
             dur = 50 * (10000 / del);
             for(int ff=0; ff<dur; ff++) {
-              for(int t=0;t<del*1;t++) dum = dum+1-1;
+              for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum)); dum= dum+dum1-1;
                   digitalWrite(soundOutputPin, LOW);
-              for(int t=0;t<del*1;t++) dum = dum+1-1;
+              for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum));dum1 = dum1+dum+1-1;
                   digitalWrite(soundOutputPin, HIGH);
             }
             del = dels[2];
             dur = 50 * (10000 / del);
             for(int ff=0; ff<dur; ff++) {
-              for(int t=0;t<del*1;t++) dum = dum+1-1;
+              for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum));; dum = dum+dum1-1;
                   digitalWrite(soundOutputPin, LOW);
-              for(int t=0;t<del*1;t++) dum = dum+1-1;
+              for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum));dum1 = dum1+dum+1-1;
                   digitalWrite(soundOutputPin, HIGH);
             }
             wtv020sd16p.asyncPlayVoice(SPK_UNKNOWN_NUMBER + SPK_PL);
@@ -457,31 +469,43 @@ void effect(int effectNumber) {
         case 14:
             setTone(TONE_BUSY);
             break;
+        default:
+            if(effectNumber >= 1000)
+                wtv020sd16p.asyncPlayVoice(effectNumber - 1000);
       }
 }
 
-void beep(char *input) {
+void beep(unsigned int *input) {
   static int curNoteIdx = 0;
   static int curNoteVal;
   static int phase = 0;
-  static char freq[100];
-  static int dur[100];
-  static int curNoteDur;
+  static int freq[100];
+  static unsigned int dur[100];
+  static unsigned int curNoteDur;
   static int soundlen;
   static char outlevel;
-  int inplen = strlen(input);
-
-  if(*input == 'x') {
+  int inplen = 0;
+  
+  if(*input > 0) {
+      for(int ff=1; ff<200; ff++)
+      if(input[ff] == 0) {
+          inplen = ff;
+          break;
+      }
+  }
+  
+  if(*input == 1) {
       soundlen = 0;
       return;
   }
   inplen = inplen > 200 ? 200/2 : inplen/2;
   // setup sound
   if(inplen > 0) {
+    memset(freq, 0, sizeof(freq));
     // read input tones 
     for(int ff=0; ff<inplen; ff++) {
       freq[ff] = input[ff*2];
-      dur[ff] = input[ff*2+1] * 2;
+      dur[ff] = input[ff*2+1];
 #ifdef DEBUG_DIAL
     Serial.print((int)freq[ff]);
     Serial.print(",");
@@ -494,7 +518,7 @@ void beep(char *input) {
     Serial.println(soundlen);
     curNoteIdx = 0;
     curNoteVal = freq[curNoteIdx];
-    curNoteDur = dur[curNoteIdx] * 500;
+    curNoteDur = dur[curNoteIdx];
     phase = 0;
     effect(curNoteVal);
   }
@@ -512,7 +536,7 @@ void beep(char *input) {
         Serial.println("fire effect");
           curNoteIdx++;
           curNoteVal = freq[curNoteIdx];
-          curNoteDur = dur[curNoteIdx] * 500;
+          curNoteDur = dur[curNoteIdx];
        effect(curNoteVal);
       }
   }
@@ -539,7 +563,7 @@ void setSoundTxtSteady(char *txt, char notelen) {
     beep(sound);
 }
 
-
+// END OF SW SIGNAL ROUTINES
 
 
 
@@ -583,11 +607,11 @@ void setup() {
 
 
   static char test_mode = 0;
-  void setTestMode (int mode) {
-    if(mode == 1)
-      test_mode = digitalRead(mode);     // turn on
-    else if(mode == 0)
-      test_mode = 1 - digitalRead(mode); // turn off
+  void setTestMode (int new_mode) {
+    if(new_mode == 1)
+      test_mode = 1; //digitalRead(mode);     // turn on
+    else if(new_mode == 0)
+      test_mode = 0; //1 - digitalRead(mode); // turn off
     else
       test_mode = 1 - test_mode;         // toggle
   };
@@ -600,7 +624,9 @@ void loop() {
   // dial wheel variables
   int dc = 0;
   static int last_dc = 0;
-  static char sound[200];  // input buffer for beep()
+//  static char sound[200];  // input buffer for beep()
+  static unsigned int zeroSound[2] = {0,0};
+  static char pis_sequence = 0;  // used to unlock sections depending on pis talk
   
   
   // DAC controlling section
@@ -647,7 +673,7 @@ void loop() {
   digitalWrite(led, digitalRead(dialInputPin));   // turn the LED on (HIGH is the voltage level)
      
   dc = dialDigitDetected();
-  beep("");     // manage tones generated by uP
+  beep(zeroSound);     // manage tones generated by uP
   setTone(-1);  // manage tones generated by external device
   
   if(dc != last_dc)
@@ -667,18 +693,21 @@ void loop() {
       #endif
       setTone(TONE_NONE);
       memset(sound, 0, sizeof(sound));
-      beep("x");  // clear beeps
+      sound[0] = 1; // clear beeps
+      beep(sound);
+      wtv020sd16p.stopVoice();  //silent
     }
     if(dc > 0)
     {
       if(dc == 1) {
          setTone(TONE_NONE);
          memset(sound, 0, sizeof(sound));
-         beep("x");
+         sound[0] = 1; // clear beeps
+         beep(sound);  
       }
       // Put number driven commands here
       
-      if(strncmp(dialDigits, "5", 1) == 0) {
+      if(strncmp(dialDigits, "4", 1) == 0) {
         /*
         memset(sound, 0, sizeof(sound));
         sound[0] = 11;   // sygnal wolne
@@ -687,7 +716,9 @@ void loop() {
         sound[3] = 1;
         beep(sound);
         */
-            memset(sound, 0, sizeof(sound));
+            //memset(sound, 0, sizeof(sound));
+            memcpy(sound, sound_unknownum, sizeof(sound_unknownum));
+            /*
             sound[0] = 13;   // sygnal nie ma takiego numeru
             sound[1] = 5;
             sound[2] = 13;   // sygnal nie ma takiego numeru
@@ -696,12 +727,13 @@ void loop() {
             sound[5] = 5;
             sound[6] = 14;   // busy
             sound[7] = 50;
+            */
             beep(sound);
 
       }
       else
       
-      if(strncmp(dialDigits, "713216216", (dc < 9) ? dc : 9) == 0) {
+      if(strncmp(dialDigits, "713215215", (dc < 9) ? dc : 9) == 0) {
         // catch prefix 713216216 + n + xxxx  -> n=1,2,3  xxxx=delay
         // set one of the three tones in "number not available"
         if(dc == 14)
@@ -724,8 +756,127 @@ void loop() {
         }
       }
       else
-      if(strncmp(dialDigits, "7173017", 7) == 0) {
-        // 7173017 toggles DAC test mode
+      if(strncmp(dialDigits, "757173017", 9) == 0) {
+           // po sygnale ktos odbiera
+               //memset(sound, 0, sizeof(sound));
+               memcpy(sound, sound_answer, sizeof(sound_answer));
+               
+               //sound[0] = 11;   // sygnal wolne
+               sound[1] = 5000 + random(15000);
+               //sound[2] = 12;   // trzask
+               //sound[3] = 1;
+               sound[4] = 1056;  // ziewy
+               sound[5] = 60000;  
+               //sound[6] = 14;   // busy
+               //sound[7] = 50;
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, "226215035", 9) == 0) {  // pis
+           // po sygnale ktos odbiera
+               //memset(sound, 0, sizeof(sound));
+               memcpy(sound, sound_answer, sizeof(sound_answer));
+               //sound[0] = 11;   // sygnal wolne
+               sound[1] = 5000 + random(15000);
+               //sound[2] = 12;   // trzask
+               //sound[3] = 1;
+               pis_sequence = random(5);
+               sound[4] = 1050+pis_sequence;  // pis
+               sound[5] = 60000;  
+               //sound[8] = 14;   // busy
+               //sound[9] = 50;
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, "5665523", 7) == 0) {  // rm
+           // po sygnale ktos odbiera
+           if(dc == 9)  // wszystkie 9-cio cyfrowe nry zaczynajace sie od 5665523
+           {
+               //memset(sound, 0, sizeof(sound));
+               memcpy(sound, sound_answer, sizeof(sound_answer));
+               
+               //sound[0] = 11;   // sygnal wolne
+               sound[1] = 5000 + random(15000);
+               //sound[2] = 12;   // trzask
+               //sound[3] = 1;
+               sound[4] = 1055;  // trzy slowa do ojca prowadzacego
+               sound[5] = 20000;  
+               //sound[6] = 14;   // busy
+               //sound[7] = 50;
+               beep(sound);
+           }
+      }
+      else
+      if(strncmp(dialDigits, "0001", 4) == 0) {
+          if(dc >= 13) {        
+           // po sygnale ktos odbiera
+               memset(sound, 0, sizeof(sound));
+               sound[0] = 1011 + random(2);   // ringing/busy US
+               sound[1] = 1000 + random(500);
+               beep(sound);
+          }
+      }
+      else
+      if(strncmp(dialDigits, "0044", 4) == 0) {
+          if(dc >= 13) {
+           // po sygnale ktos odbiera
+               memset(sound, 0, sizeof(sound));
+               sound[0] = 1013;   // ringing UK
+               sound[1] = 1000 + random(500);
+               beep(sound);
+          }
+      }
+      else
+      if(pis_sequence == 3 && strncmp(dialDigits, "666", 3) == 0) {  // pis 3 = hymn
+           // po sygnale ktos odbiera
+               memcpy(sound, sound_answer, sizeof(sound_answer));
+               //sound[0] = 11;   // sygnal wolne
+               sound[1] = 5000 + random(15000);
+               //sound[2] = 12;   // trzask
+               //sound[3] = 1;
+               sound[4] = 1057;  // powitanie szatana
+               sound[5] = 10000;  
+               //sound[6] = 14;   // busy
+               //sound[7] = 10000;
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, "922", 3) == 0) {  // wrozka
+           // po sygnale ktos odbiera
+               memcpy(sound, sound_answer, sizeof(sound_answer));
+               //sound[0] = 11;   // sygnal wolne
+               sound[1] = 5000 + random(15000);
+               //sound[2] = 12;   // trzask
+               //sound[3] = 1;
+               sound[4] = 1060 + random(3);  // wrozby
+               sound[5] = 10000;  
+               //sound[6] = 14;   // busy
+               //sound[7] = 10000;
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, "926", 3) == 0) {
+           // po sygnale ktos odbiera
+               memset(sound, 0, sizeof(sound));
+               sound[0] = 1015;   // miedzymiastowa, tylko testowo w tym miejscu
+               sound[1] = 8000;
+               sound[2] = 14;   // busy
+               sound[3] = 10000;
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, "928", 3) == 0) {
+           // po sygnale ktos odbiera
+               memset(sound, 0, sizeof(sound));
+               sound[0] = 1016;   // mowi sie, tylko testowo w tym miejscu
+               sound[1] = 8000;
+               sound[2] = 14;   // busy
+               sound[3] = 10000;
+               beep(sound);
+      }
+      else
+      if(strncmp(dialDigits, "713216216", 9) == 0) {
+        // toggles DAC test mode
           setTestMode(-1);  // toggle test mode (DAC)
           #ifdef DEBUG_STORY
           Serial.print("Test Mode ");
@@ -744,9 +895,9 @@ void loop() {
            sscanf(&dialDigits[1], "%d", &seed);
            randomSeed(seed);
            story_length = random(20) + 3;
-           setTestMode(0);
+           setTestMode(1);
            
-           setSoundTxtSteady(dialDigits, 1);
+           setSoundTxtSteady(dialDigits, 20);
            // resetDialDigits(); 
           #ifdef DEBUG_STORY
           sprintf(outdbg, "seed %d, length %d", seed, story_length);
@@ -762,9 +913,15 @@ void loop() {
            if(random(2)) {
                memset(sound, 0, sizeof(sound));
                sound[0] = 11;   // sygnal wolne
-               sound[1] = 200 + random(50);
+               sound[1] = 5000 + random(15000);
                sound[2] = 12;   // trzask
-               sound[3] = 1;
+               sound[3] = 2;
+               sound[4] = 1017;  // prosze czekac
+               sound[5] = 100;  
+               sound[6] = 1017;  // prosze czekac
+               sound[7] = 100;  
+               sound[8] = 14;   // busy
+               sound[9] = 50;
                beep(sound);
            }
            else {
@@ -779,10 +936,10 @@ void loop() {
             memset(sound, 0, sizeof(sound));
             sound[0] = 13;   // sygnal nie ma takiego numeru
             sound[1] = 10;
-            sound[0] = 12;   // losowy trzask
-            sound[1] = 100;
-            sound[0] = 13;   // sygnal nie ma takiego numeru
-            sound[1] = 100;
+            sound[2] = 12;   // losowy trzask
+            sound[3] = 100;
+            sound[4] = 13;   // sygnal nie ma takiego numeru
+            sound[5] = 100;
             beep(sound);
       }
       else
