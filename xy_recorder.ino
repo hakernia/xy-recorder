@@ -1,15 +1,19 @@
 /*
 
-Recorder XY v4 + dial controller
+Recorder XY v4 + dial controller + ringer
+Getting rid of the software tones. This shit stopped working after compiler upgrade
+   (possibly the better optimization screwed delay loops) and morover 
+   it causes strange troubles (uP gets spinning so that reset does not help).
+   No point to investigate it.
 
 v02 - dodane rozne telefony
  */
 
 #include <Wtv020sd16p.h>
 
-#define DEBUG_DAC
+#undef DEBUG_DAC
 #undef DEBUG_DIAL
-#define DEBUG_STORY
+#undef DEBUG_STORY
 
 
 // wtv020 pin
@@ -44,6 +48,7 @@ int data = 4;
 int dialInputPin = 8;  //7
 int soundOutputPin = 7;  //8
 int tonePin = 9; //10;
+int ringerPin = A0;
 
 int dels[4] = {1600, 1100, 800};  // default tone for incorrect number
 int dum;  // dummy global var to avoid compiler optimization
@@ -63,9 +68,24 @@ double dstep2 = caret_speed;  // initial value of step Y
 
 int story_length = 0;  // -1 - endless
 
+#ifdef DEBUG_DAC
 char outdbg[300];
+#endif
 
 
+
+
+
+#define EVT_01_BURPS_CALLING    1
+#define EVT_02_DEVILS_CALLING   2
+#define EVT_03                  3
+
+// Time variables
+unsigned long  secondsFromMidnight0;
+unsigned long  currentEventStart = -1;
+unsigned long  currentEventDuration = 20;
+unsigned char  currentEventId;
+unsigned char  incoming_call = 0;  // false - dialed call, true - incoming call
 
 
 // DAC functions
@@ -208,7 +228,7 @@ int readDialInputPin()
 {
   static int buttonState;
   static int lastButtonState = LOW;
-  static long lastDebounceTime = 0;
+  static unsigned long lastDebounceTime = 0;
   int reading = digitalRead(dialInputPin);
   
   if (reading != lastButtonState) 
@@ -354,6 +374,10 @@ int dialDigitDetected()
   return dialDigitsNum + 1;
 }
 
+void makeUpDialDigits(char *buf) {
+  dialDigitsNum = strlen(buf);
+  strncpy(dialDigits, buf, dialDigitsNum);
+}
 // END OF DIAL WHEEL ROUTINES
 
 
@@ -414,15 +438,16 @@ void setTone(int mode) {
 
 
 // SW SIGNAL ROUTINES
-
-unsigned int sound[200];  // buffer of digits: pitch, length
+#define  MAX_INPLEN  50
+unsigned int sound[MAX_INPLEN];  // buffer of digits: pitch, length
+unsigned char snd;  // global index in sound[]
 // 11 - sygnal wolne
 // 12 - trzask
 // 13 - sygnal nie ma takiego numeru
 // 14 - busy
-unsigned int sound_answer[]    = {11,10000,12,100,0,0,14,50, 0,0};  // [1]:200-250, [4]-effect [5]-effect duration
+unsigned int sound_answer[]    = {11,1000,12,100,0,0};  // [1]:200-250, [4]-effect [5]-effect duration
 unsigned int sound_busy[]      = {14,10000, 0,0};
-unsigned int sound_unknownum[] = {13,5000, 13,5000, 13,5000, 14,10000, 0,0};
+unsigned int sound_unknownum[] = {13,500, 13,500, 13,500, 14,1000, 0,0};
 
 
 void effect(int effectNumber) {
@@ -435,11 +460,14 @@ void effect(int effectNumber) {
             setTone(TONE_FREE);
             break;
         case 12:  // losowy trzask
+        /*
             for(int ff=0; ff<150; ff++) {
-              digitalWrite(soundOutputPin, random(4));
+              digitalWrite(soundOutputPin, (random(4) < 2));
             }
             break;
+        */
         case 13:  // nie ma takiego numeru
+        /*
             dur = 50 * (10000 / del);
             for(int ff=0; ff<dur; ff++) {
               for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum)); dum = dum+dum1-1;
@@ -464,6 +492,7 @@ void effect(int effectNumber) {
               for(int t=0;t<del*1;t++) memcpy(dum, dum1, sizeof(dum));dum1 = dum1+dum+1-1;
                   digitalWrite(soundOutputPin, HIGH);
             }
+        */
             wtv020sd16p.asyncPlayVoice(SPK_UNKNOWN_NUMBER + SPK_PL);
             break;
         case 14:
@@ -472,22 +501,24 @@ void effect(int effectNumber) {
         default:
             if(effectNumber >= 1000)
                 wtv020sd16p.asyncPlayVoice(effectNumber - 1000);
+                
+        dum1 = dum;  // anti optimizer
       }
 }
 
 void beep(unsigned int *input) {
-  static int curNoteIdx = 0;
-  static int curNoteVal;
-  static int phase = 0;
-  static int freq[100];
-  static unsigned int dur[100];
-  static unsigned int curNoteDur;
-  static int soundlen;
-  static char outlevel;
-  int inplen = 0;
+  static unsigned int curNoteIdx = 0;
+  static unsigned int curNoteVal;
+  static unsigned long phase = 0;
+  static unsigned int freq[MAX_INPLEN/2];
+  static unsigned int dur[MAX_INPLEN/2];
+  static unsigned long curNoteDur;
+  static unsigned int soundlen;
+  static unsigned char outlevel;
+  unsigned int inplen = 0;
   
   if(*input > 0) {
-      for(int ff=1; ff<200; ff++)
+      for(int ff=1; ff<MAX_INPLEN; ff++)
       if(input[ff] == 0) {
           inplen = ff;
           break;
@@ -498,7 +529,7 @@ void beep(unsigned int *input) {
       soundlen = 0;
       return;
   }
-  inplen = inplen > 200 ? 200/2 : inplen/2;
+  inplen = inplen > MAX_INPLEN ? MAX_INPLEN/2 : inplen/2;
   // setup sound
   if(inplen > 0) {
     memset(freq, 0, sizeof(freq));
@@ -514,11 +545,14 @@ void beep(unsigned int *input) {
 #endif
     }
     soundlen = inplen;
+#ifdef DEBUG_DIAL
     Serial.print("soundlen: ");
     Serial.println(soundlen);
+#endif
     curNoteIdx = 0;
     curNoteVal = freq[curNoteIdx];
     curNoteDur = dur[curNoteIdx];
+    curNoteDur *= 10;
     phase = 0;
     effect(curNoteVal);
   }
@@ -533,10 +567,13 @@ void beep(unsigned int *input) {
              }
       phase %= curNoteDur;
       if(phase == 0) {
-        Serial.println("fire effect");
+#ifdef DEBUG_DIAL
+          Serial.println("fire effect");
+#endif
           curNoteIdx++;
           curNoteVal = freq[curNoteIdx];
           curNoteDur = dur[curNoteIdx];
+          curNoteDur *= 10;
        effect(curNoteVal);
       }
   }
@@ -563,12 +600,178 @@ void setSoundTxtSteady(char *txt, char notelen) {
     beep(sound);
 }
 
+void resetSound() {
+    memset(sound, 0, sizeof(sound));
+    snd = 0;
+}
+char addSound(unsigned int effect, unsigned int duration) {
+    if(snd + 1 < MAX_INPLEN) {
+        sound[snd++] = effect;
+        sound[snd++] = duration;
+        return true;
+    }
+    return false;
+}
+void addSoundArray(unsigned int arr[]) {
+    int ff = 0;
+    while(arr[ff] != 0) {
+      addSound(arr[ff], arr[ff+1]);
+      ff += 2;
+    }
+}
+
+void addSoundAnswer() {
+    addSound(11, 500 + random(1000));
+}
+void addSoundBusy() {
+    addSound(14, 20000);
+}
+
 // END OF SW SIGNAL ROUTINES
 
 
 
 
 
+// TIME MANAGEMENT FUNCTIONS
+
+unsigned long lastMillis = 0;
+long timeIn(char days, char hrs, char mins, char secs) {
+  return days * 60*60*24 + hrs * 60*60 * mins * 60 + secs;
+}
+
+unsigned char cevts;  // temp counter of events being currently active 
+unsigned char evt_num;  // temp number of event being processed
+#define MAX_EVENTS  10
+unsigned long eventStart[MAX_EVENTS];
+unsigned int eventDuration[MAX_EVENTS];
+unsigned char eventType[MAX_EVENTS];  // 0-execute once, 1-recurring daily
+unsigned char eventId[MAX_EVENTS];
+unsigned char eventCount;
+
+// eventId == 0 - no event
+
+#define EVT_TYPE_ONCE              0
+#define EVT_TYPE_RECURRING_DAILY   1
+#define EVT_TYPE_RECURRING_HOURLY  2
+
+char scheduleEvent(unsigned long newEventStart,
+                   unsigned long newEventDuration,
+                   unsigned char newEventType,
+                   unsigned char newEventId) {
+    unsigned char evt;
+    for(evt=0; evt<MAX_EVENTS; evt++) {
+      if(eventStart[evt] == -1) {
+        eventStart[evt] = newEventStart;
+        eventDuration[evt] = newEventDuration;
+        eventType[evt] = newEventType;
+        eventId[evt] = newEventId;
+        return true;
+      }
+    }
+    return false;
+}
+void deleteEvt(unsigned char evt) {
+    eventStart[evt] = -1;
+    eventDuration[evt] = 0;
+    eventType[evt] = 0;
+    eventId[evt] = 0;
+}
+void finalizeEvt(unsigned char evt) {
+   if(eventType[evt] == EVT_TYPE_ONCE) { 
+       deleteEvt(evt);
+   } else
+   if(eventType[evt] == EVT_TYPE_RECURRING_DAILY) { 
+       eventStart[evt] += 86400;  // move start 24 hrs
+   } else
+   if(eventType[evt] == EVT_TYPE_RECURRING_HOURLY) { 
+       eventStart[evt] += 3600;  // move start 1 hr
+   }
+}
+char deleteEvent(unsigned char deleteEventId) {
+    unsigned char evt;
+    for(evt=0; evt<MAX_EVENTS; evt++) {
+      if(eventId[evt] == deleteEventId) {
+          deleteEvt(evt);
+          return true;
+      }
+    }
+    return false;
+}
+char finalizeEvent(unsigned char finalizeEventId) {
+    unsigned char evt;
+    for(evt=0; evt<MAX_EVENTS; evt++) {
+      if(eventId[evt] == finalizeEventId) {
+           finalizeEvt(evt);
+           return true;
+      }
+    }
+    return false;
+}
+unsigned char countCurrentEvents() {
+    unsigned char evt;
+    unsigned char evt_num = 0;
+    for(evt=0; evt<MAX_EVENTS; evt++) {
+      if(eventStart[evt] < secondsFromMidnight0) {
+         if(secondsFromMidnight0 < eventStart[evt] + eventDuration[evt]) {
+           // one of the currently active
+           evt_num++;
+         }
+         else {
+           finalizeEvt(evt);
+         }
+      }
+    }
+    return evt_num;
+}
+char getCurrentEvent(unsigned char event_num,
+                     unsigned long *foundEventStart,
+                     unsigned long *foundEventDuration,
+                     unsigned char *foundEventId) {
+    unsigned char evt;
+    unsigned char evt_num = 0;
+    for(evt=0; evt<MAX_EVENTS; evt++) {
+      if(eventStart[evt] < secondsFromMidnight0 &&
+         secondsFromMidnight0 < eventStart[evt] + eventDuration[evt]) {
+        if(evt_num++ == event_num) {
+          *foundEventStart = eventStart[evt];
+          *foundEventDuration = eventDuration[evt];
+          *foundEventId = eventId[evt];
+          return true;
+        }
+      }
+    }
+    return false;
+}
+// END OF TIME MANAGEMENT FUNCTIONS
+
+
+
+
+#define RING_MSEC 500
+
+unsigned short ring(unsigned short ringDur, unsigned short gapDur) {
+  static unsigned long lastMillis = 0;
+  static unsigned short ring_dur;
+  static unsigned short gap_dur;
+  int ring_msec = 0;
+
+  if(ringDur > 0) {
+    ring_dur = ringDur;
+    gap_dur = gapDur;
+  }
+  
+  if(millis() - lastMillis < ring_dur) {
+      digitalWrite(ringerPin, HIGH);
+      delay(ring_dur);
+      digitalWrite(ringerPin, LOW);
+  }
+  else {
+      if(millis() - lastMillis > ring_dur + gap_dur) {
+          lastMillis = millis();
+      }
+  }
+}
 
 
 
@@ -581,6 +784,8 @@ void setup() {
   pinMode(dialInputPin, INPUT);
   pinMode(soundOutputPin, OUTPUT);
   pinMode(tonePin, OUTPUT);
+  pinMode(ringerPin, OUTPUT);
+  digitalWrite(ringerPin, LOW);  // LOW = do not ring
 
   // Pins for TDA1543 DAC
   pinMode(ws, OUTPUT);     
@@ -596,6 +801,12 @@ void setup() {
   // Initializes the wtv sound module
   wtv020sd16p.reset();
 
+  // Initialize time variables
+  secondsFromMidnight0 = timeIn(0, 16, 00, 00);  // day 0, 16:00
+
+  memset(eventStart, -1, sizeof(eventStart));
+  memset(eventDuration, 0, sizeof(eventDuration));
+  memset(eventId, 0, sizeof(eventId));
   
   Serial.begin(9600); 
 }
@@ -624,7 +835,7 @@ void loop() {
   // dial wheel variables
   int dc = 0;
   static int last_dc = 0;
-//  static char sound[200];  // input buffer for beep()
+//  static char sound[MAX_INPLEN];  // input buffer for beep()
   static unsigned int zeroSound[2] = {0,0};
   static char pis_sequence = 0;  // used to unlock sections depending on pis talk
   
@@ -665,6 +876,52 @@ void loop() {
 
 
 
+  dc = dialDigitDetected();
+
+
+
+
+  // Time management
+  if(millis() < lastMillis)
+    lastMillis = millis();  // handle millis overflow
+  if(millis() - lastMillis > 1000) {
+    secondsFromMidnight0 += (millis() - lastMillis) / 1000;  // bump seconds counter
+    lastMillis = millis();                                   // reset millis detector
+  }
+
+  if(dc < 0)  // do only if hanged up
+  if((cevts = countCurrentEvents()) > 0) {
+    for(evt_num=0; evt_num < cevts; evt_num++) {
+      if(getCurrentEvent(evt_num, &currentEventStart, &currentEventDuration, &currentEventId)) {
+        // one of the currently active events has been fetched
+        switch(currentEventId) {
+          case EVT_01_BURPS_CALLING: // dzwonia pobekiwania
+               ring(1000, 4000);  // ring duration, gap duration
+               break;
+          /*
+          case EVT_02_HOURLY_CALLING:
+               ring(1000, 4000);
+               break;
+          */
+        }
+      };
+    }
+  }
+  else {
+      currentEventId = 0; // no current events!
+  }
+  /*
+  if(dc < 0)  // do only if hanged up
+  if(currentEventStart < secondsFromMidnight0 &&
+     secondsFromMidnight0 < currentEventStart + currentEventDuration) {
+     ring(1000, 4000);
+     //if(ring(1000, 1000) == 0)
+     //     currentEventStart = -1;
+  }
+  */
+  // End of time management
+
+
 
 
 
@@ -672,20 +929,16 @@ void loop() {
   
   digitalWrite(led, digitalRead(dialInputPin));   // turn the LED on (HIGH is the voltage level)
      
-  dc = dialDigitDetected();
   beep(zeroSound);     // manage tones generated by uP
   setTone(-1);  // manage tones generated by external device
   
-  if(dc != last_dc)
+  if(dc != last_dc)  // enter only if new digit dialed or handset status changed
   {
     last_dc = dc;
-    if(dc == 0) {
-      #ifdef DEBUG_DIAL
-      Serial.print(dc);
-      Serial.println(": Picked up.");
-      #endif
-      setTone(TONE_READY);
-    }
+
+
+
+    
     if(dc < 0) {
       #ifdef DEBUG_DIAL
       Serial.print(dc);
@@ -696,6 +949,47 @@ void loop() {
       sound[0] = 1; // clear beeps
       beep(sound);
       wtv020sd16p.stopVoice();  //silent
+      incoming_call = 0;  // reset to default
+    }
+    else
+    {
+      // Picked up. 
+      // implement reactions to calling in events here
+      // they usually do not depend on dialed numbers
+
+    if (1)
+    {
+
+        
+    if(dc == 0) {  // nothing dialed yet
+      #ifdef DEBUG_DIAL
+      Serial.print(dc);
+      Serial.println(": Picked up.");
+      #endif
+
+
+
+
+      if(currentEventId == EVT_01_BURPS_CALLING) {
+        /*
+               sound[0] = 1056;  // ziewy
+               sound[1] = 10000;  
+               sound[2] = 14;   // busy
+               sound[3] = 20000;
+               beep(sound);
+        */
+        incoming_call = true;
+        finalizeEvent(EVT_01_BURPS_CALLING); // delete or reschedule, depending on eventType
+        currentEventId = 0;                // unmark current event, it has just been executed
+        makeUpDialDigits("757173017");     // this is the number that is calling
+                                           // the next loop will get to proper dc > 0
+      } 
+      else  // no event of incoming call; perform the ready tone
+        setTone(TONE_READY);
+
+
+
+        
     }
     if(dc > 0)
     {
@@ -717,7 +1011,9 @@ void loop() {
         beep(sound);
         */
             //memset(sound, 0, sizeof(sound));
-            memcpy(sound, sound_unknownum, sizeof(sound_unknownum));
+            resetSound();
+            //memcpy(sound, sound_unknownum, sizeof(sound_unknownum));
+            addSoundArray(sound_unknownum);
             /*
             sound[0] = 13;   // sygnal nie ma takiego numeru
             sound[1] = 5;
@@ -730,6 +1026,10 @@ void loop() {
             */
             beep(sound);
 
+            //scheduledEventStart = secondsFromMidnight0 + timeIn(0, 0, 0, 20);
+            scheduleEvent(secondsFromMidnight0 + timeIn(0, 0, 0, 20), 20, 
+                          EVT_TYPE_RECURRING_HOURLY, 
+                          EVT_01_BURPS_CALLING);
       }
       else
       
@@ -747,44 +1047,42 @@ void loop() {
             Serial.print(del);
             Serial.print("/");
             Serial.println(dur);
+            /*
             for(int ff=0; ff<dur; ff++) {
               for(int t=0;t<del*1;t++) dum = dum+1-1;
                   digitalWrite(soundOutputPin, LOW);
               for(int t=0;t<del*1;t++) dum = dum+1-1;
                   digitalWrite(soundOutputPin, HIGH);
             }
+            */
         }
       }
       else
       if(strncmp(dialDigits, "757173017", 9) == 0) {
            // po sygnale ktos odbiera
                //memset(sound, 0, sizeof(sound));
-               memcpy(sound, sound_answer, sizeof(sound_answer));
-               
-               //sound[0] = 11;   // sygnal wolne
-               sound[1] = 5000 + random(15000);
-               //sound[2] = 12;   // trzask
-               //sound[3] = 1;
-               sound[4] = 1056;  // ziewy
-               sound[5] = 60000;  
-               //sound[6] = 14;   // busy
-               //sound[7] = 50;
+               resetSound();
+               if(!incoming_call) {
+                   // add waiting signals etc.
+                   //addSoundArray(sound_answer);  // sygnal wolne, trzask
+                   addSoundAnswer();
+               }
+               addSound(1056, 10000);  // ziewy
+               addSound(14, 20000);    // busy tone
                beep(sound);
       }
       else
       if(strncmp(dialDigits, "226215035", 9) == 0) {  // pis
            // po sygnale ktos odbiera
-               //memset(sound, 0, sizeof(sound));
-               memcpy(sound, sound_answer, sizeof(sound_answer));
-               //sound[0] = 11;   // sygnal wolne
-               sound[1] = 5000 + random(15000);
-               //sound[2] = 12;   // trzask
-               //sound[3] = 1;
+               resetSound();
+               if(!incoming_call) {
+                   addSoundAnswer();
+               }
                pis_sequence = random(5);
-               sound[4] = 1050+pis_sequence;  // pis
-               sound[5] = 60000;  
-               //sound[8] = 14;   // busy
-               //sound[9] = 50;
+               //sound[4] = 1050+pis_sequence;  // pis
+               //sound[5] = 60000;  
+               addSound(1050+pis_sequence, 6000);
+               addSound(14, 2000);
                beep(sound);
       }
       else
@@ -792,17 +1090,14 @@ void loop() {
            // po sygnale ktos odbiera
            if(dc == 9)  // wszystkie 9-cio cyfrowe nry zaczynajace sie od 5665523
            {
-               //memset(sound, 0, sizeof(sound));
-               memcpy(sound, sound_answer, sizeof(sound_answer));
-               
-               //sound[0] = 11;   // sygnal wolne
-               sound[1] = 5000 + random(15000);
-               //sound[2] = 12;   // trzask
-               //sound[3] = 1;
+               resetSound();
+               if(!incoming_call) {
+                   addSoundAnswer();
+               }               
                sound[4] = 1055;  // trzy slowa do ojca prowadzacego
                sound[5] = 20000;  
-               //sound[6] = 14;   // busy
-               //sound[7] = 50;
+               addSound(1055, 2000);
+               addSound(14, 20000);
                beep(sound);
            }
       }
@@ -810,9 +1105,10 @@ void loop() {
       if(strncmp(dialDigits, "0001", 4) == 0) {
           if(dc >= 13) {        
            // po sygnale ktos odbiera
-               memset(sound, 0, sizeof(sound));
-               sound[0] = 1011 + random(2);   // ringing/busy US
-               sound[1] = 1000 + random(500);
+               resetSound();
+               if(!incoming_call) {
+                   addSound(1011 + random(2), 1000 + random(500));  // 1011/1012 - ringing/busy US
+               }
                beep(sound);
           }
       }
@@ -820,58 +1116,51 @@ void loop() {
       if(strncmp(dialDigits, "0044", 4) == 0) {
           if(dc >= 13) {
            // po sygnale ktos odbiera
-               memset(sound, 0, sizeof(sound));
-               sound[0] = 1013;   // ringing UK
-               sound[1] = 1000 + random(500);
+               resetSound();
+               if(!incoming_call) {
+                   addSound(1013 + random(2), 1000 + random(500));  // 1011/1012 - ringing/busy UK
+               }
                beep(sound);
           }
       }
       else
       if(pis_sequence == 3 && strncmp(dialDigits, "666", 3) == 0) {  // pis 3 = hymn
            // po sygnale ktos odbiera
-               memcpy(sound, sound_answer, sizeof(sound_answer));
-               //sound[0] = 11;   // sygnal wolne
-               sound[1] = 5000 + random(15000);
-               //sound[2] = 12;   // trzask
-               //sound[3] = 1;
-               sound[4] = 1057;  // powitanie szatana
-               sound[5] = 10000;  
-               //sound[6] = 14;   // busy
-               //sound[7] = 10000;
+               resetSound();
+               if(!incoming_call) {
+                addSound(1057, 1000); // POWITANIE SZATANA
+               }
+               addSound(14, 20000);
                beep(sound);
       }
       else
       if(strncmp(dialDigits, "922", 3) == 0) {  // wrozka
            // po sygnale ktos odbiera
-               memcpy(sound, sound_answer, sizeof(sound_answer));
-               //sound[0] = 11;   // sygnal wolne
-               sound[1] = 5000 + random(15000);
-               //sound[2] = 12;   // trzask
-               //sound[3] = 1;
-               sound[4] = 1060 + random(3);  // wrozby
-               sound[5] = 10000;  
-               //sound[6] = 14;   // busy
-               //sound[7] = 10000;
+               resetSound();
+               if(!incoming_call) {
+                addSound(1060 + random(3), 1000); // wrozby
+               }
+               addSound(14, 20000);
                beep(sound);
       }
       else
       if(strncmp(dialDigits, "926", 3) == 0) {
            // po sygnale ktos odbiera
-               memset(sound, 0, sizeof(sound));
-               sound[0] = 1015;   // miedzymiastowa, tylko testowo w tym miejscu
-               sound[1] = 8000;
-               sound[2] = 14;   // busy
-               sound[3] = 10000;
+               resetSound();
+               if(!incoming_call) {
+                addSound(1015, 800); // miedzymiastowa, tylko testowo w tym miejscu
+               }
+               addSound(14, 20000);
                beep(sound);
       }
       else
       if(strncmp(dialDigits, "928", 3) == 0) {
            // po sygnale ktos odbiera
-               memset(sound, 0, sizeof(sound));
-               sound[0] = 1016;   // mowi sie, tylko testowo w tym miejscu
-               sound[1] = 8000;
-               sound[2] = 14;   // busy
-               sound[3] = 10000;
+               resetSound();
+               if(!incoming_call) {
+                addSound(1016, 8000); // mowi sie?, tylko testowo w tym miejscu
+               }
+               addSound(14, 20000);
                beep(sound);
       }
       else
@@ -910,18 +1199,13 @@ void loop() {
         // all 9 digit numbers starting 71 can be free or busy
         if(dc == 9) {
            // po sygnale ktos odbiera
+           if(!incoming_call)
            if(random(2)) {
-               memset(sound, 0, sizeof(sound));
-               sound[0] = 11;   // sygnal wolne
-               sound[1] = 5000 + random(15000);
-               sound[2] = 12;   // trzask
-               sound[3] = 2;
-               sound[4] = 1017;  // prosze czekac
-               sound[5] = 100;  
-               sound[6] = 1017;  // prosze czekac
-               sound[7] = 100;  
-               sound[8] = 14;   // busy
-               sound[9] = 50;
+               resetSound();
+               addSound(11, 500); // sygnal wolne
+               addSound(17, 500); // prosze czekac
+               addSound(17, 500); // prosze czekac
+               addSound(14, 1500); // busy
                beep(sound);
            }
            else {
@@ -933,14 +1217,11 @@ void loop() {
       else
       if(dc > 12) {
         // all numbers longer than 12 are unknown
-            memset(sound, 0, sizeof(sound));
-            sound[0] = 13;   // sygnal nie ma takiego numeru
-            sound[1] = 10;
-            sound[2] = 12;   // losowy trzask
-            sound[3] = 100;
-            sound[4] = 13;   // sygnal nie ma takiego numeru
-            sound[5] = 100;
-            beep(sound);
+           resetSound();
+           if(!incoming_call) {
+               addSoundArray(sound_unknownum);
+               beep(sound);
+           }
       }
       else
       if(dc > 10)
@@ -965,6 +1246,11 @@ void loop() {
         Serial.println("");
 #endif
       } // dc > 0
+
+    } // else currentEventId ==
+    
+    } // else dc < 0
+    
   } // dc != lastdc
 
   // End of dial wheel controlling section
