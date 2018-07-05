@@ -1,21 +1,37 @@
 /*
-  xy_recorder.ino
 
-  Sends data to TDA1543 double DAC
-  Added dial controller
+Recorder XY v4 + dial controller
+ */
 
-*/
+#include <Wtv020sd16p.h>
 
 #define DEBUG_DAC
 #undef DEBUG_DIAL
 #define DEBUG_STORY
 
+
+// wtv020 pin
+int resetPin = 10; //5;  //2 
+int clockPin = 11; //6; //3;  
+int dataPin =  12; //9;  //4;  
+int busyPin = 19;  //5;  // not used if async play only
+
+// init wtv management object
+Wtv020sd16p wtv020sd16p(resetPin,clockPin,dataPin,busyPin);
+
+#define SPK_UNKNOWN_NUMBER  10
+#define SPK_ZERO  0
+#define SPK_PL  0
+#define SPK_EN 20
+#define SPK_SP 40
+
+
 // Pin 13 has an LED connected on most Arduino boards.
 int led = 13;
 
 // plotter pins
-int mode = 12;
-int powerOff = 9;  // 0 - plotter ON, 1 - plotter OFF
+int mode = 5;  //12;   // input: 0 - work, 1 - test
+int powerOff = 6;  //9;  // 0 - plotter ON, 1 - plotter OFF
 
 // DAC pins
 int ws = 2;
@@ -23,9 +39,9 @@ int bck = 3;
 int data = 4;
 
 // dial pins
-int dialInputPin = 7;
-int soundOutputPin = 8;
-int tonePin = 10;
+int dialInputPin = 8;  //7
+int soundOutputPin = 7;  //8
+int tonePin = 9; //10;
 
 int dels[4] = {1600, 1100, 800};  // default tone for incorrect number
 int dum;  // dummy global var to avoid compiler optimization
@@ -336,9 +352,12 @@ int dialDigitDetected()
   return dialDigitsNum + 1;
 }
 
+// END OF DIAL WHEEL ROUTINES
 
 
 
+
+// HW TONE GENERATOR MANAGEMENT ROUTINES
 
 #define TONE_NONE    0
 #define TONE_READY   1
@@ -387,6 +406,13 @@ void setTone(int mode) {
       digitalWrite(tonePin, LOW);   // turn tone off
 }
 
+// END OF HW GENERATOR TONE ROUTINES
+
+
+
+
+// SW SIGNAL ROUTINES
+
 char sound[200];  // buffer of digits: pitch, length
 void effect(int effectNumber) {
   int del = dels[0];
@@ -426,6 +452,7 @@ void effect(int effectNumber) {
               for(int t=0;t<del*1;t++) dum = dum+1-1;
                   digitalWrite(soundOutputPin, HIGH);
             }
+            wtv020sd16p.asyncPlayVoice(SPK_UNKNOWN_NUMBER + SPK_PL);
             break;
         case 14:
             setTone(TONE_BUSY);
@@ -512,7 +539,6 @@ void setSoundTxtSteady(char *txt, char notelen) {
     beep(sound);
 }
 
-// END OF DIAL WHEEL ROUTINES
 
 
 
@@ -542,6 +568,10 @@ void setup() {
   pinMode(mode, INPUT);  // 0 - work, 1 - test
   pinMode(powerOff, OUTPUT);  // 0 - plotter power ON
   set_target(0, 0);
+  
+  // Initializes the wtv sound module
+  wtv020sd16p.reset();
+
   
   Serial.begin(9600); 
 }
@@ -749,7 +779,7 @@ void loop() {
             memset(sound, 0, sizeof(sound));
             sound[0] = 13;   // sygnal nie ma takiego numeru
             sound[1] = 10;
-            sound[0] = 12;   // sygnal nie ma takiego numeru
+            sound[0] = 12;   // losowy trzask
             sound[1] = 100;
             sound[0] = 13;   // sygnal nie ma takiego numeru
             sound[1] = 100;
