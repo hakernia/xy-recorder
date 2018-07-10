@@ -96,6 +96,7 @@ char outdbg[300];
 #define EVT_01_BURPS_CALLING    1
 #define EVT_02_DEVILS_CALLING   2
 #define EVT_03_NUMBERS_CALLING  3
+#define EVT_04_INCENTIVE_CALL   4
 
 // Time variables
 unsigned long  secondsFromMidnight0;
@@ -105,7 +106,7 @@ unsigned char  currentEventType;
 unsigned char  currentEventIdx;
 unsigned char  incoming_call = 0;  // false - dialed call, true - incoming call
 
-
+unsigned long last_dialing_millis = 0;  // used to detect long periods without dialing
 
 void deleteAllEvents();
 
@@ -1144,6 +1145,9 @@ void loop() {
           case EVT_03_NUMBERS_CALLING: // dzwonią numery
                ring(1000, 4000);  // ring duration, gap duration
                break;
+          case EVT_04_INCENTIVE_CALL:  // dzwoni ktos dla zachety do interakcji
+               ring(1000, 4000);  // ring duration, gap duration
+               break;
         }
       };
     }
@@ -1220,6 +1224,19 @@ void loop() {
       beep(sound);
       wtv020sd16p.stopVoice();  //silent
       incoming_call = 0;  // reset to default
+
+      // if curiosity/hesitation scenario occured
+      //     handset picked up and hanged up without any calling
+      //     + long time since the last action
+      // then schedule event to initiate a incentive call.
+      if(dc == -1) {  // no number has been dialed
+        if(millis() > last_dialing_millis + 1000 * 60 * 10) {  // at least 10 minutes without dialing
+          scheduleEvent(secondsFromMidnight0 + timeIn(0, 0, 0, 20), 20,
+             EVT_ONCE,
+             EVT_04_INCENTIVE_CALL);
+
+        }
+      }
     }
     else
     {
@@ -1239,7 +1256,7 @@ void loop() {
 
 
 
-
+      // check to see if handset picked up because phone was ringing
       if(currentEventType == EVT_01_BURPS_CALLING) {
         /*
                sound[0] = 1056;  // ziewy
@@ -1263,6 +1280,13 @@ void loop() {
         makeUpDialDigits("9497");     // this is the number that is calling
                                            // the next loop will get to proper dc > 0
       }
+      else
+      if(currentEventType == EVT_04_INCENTIVE_CALL) {
+        incoming_call = true;
+        finalizeEvt(currentEventIdx);
+        currentEventType = 0;
+        makeUpDialDigits("00000");   // change it to some more interesting number!!!
+      }
       else  // no event of incoming call; perform the ready tone
         setTone(TONE_READY);
 
@@ -1272,6 +1296,7 @@ void loop() {
     }
     if(dc > 0)
     {
+      last_dialing_millis = lastMillis;  // used to detect long idle periods
       if(dc == 1) {
          setTone(TONE_NONE);
          memset(sound, 0, sizeof(sound));
@@ -1426,6 +1451,18 @@ void loop() {
           }
       }
       else
+      if(strncmp(dialDigits, "00000", 5) == 0) {
+        // dzwoni naprawa linii tel
+        resetSound();
+        if(!incoming_call) {
+            addSound(1011 + random(2), 1000 + random(500));  // 1011/1012 - ringing/busy US
+        }
+        else {
+            addSound(1063, 1000 + random(500));  // incentive message - line service; chwilowo 55= trzy slowa!!!
+        }
+        beep(sound);
+      }
+      else
       if(strncmp(dialDigits, "0044", 4) == 0) {
           if(dc >= 13) {
            // po sygnale ktos odbiera
@@ -1498,7 +1535,7 @@ void loop() {
                           EVT_03_NUMBERS_CALLING);
 
             // covering event
-            // it is scheduled a few seconds aahead of the above important one
+            // it is scheduled a few seconds ahead of the above important one
             // it must be scheduled after the real one, as the later the event the higher its priority
             scheduleEvent(secondsFromMidnight0 + timeIn(0, 0, 0, 20), 20,
                           EVT_RECURRING_HOURLY,
