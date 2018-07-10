@@ -1060,6 +1060,7 @@ char* nr[] = {"225182200",  // NR_MASTERMIND_SETUP  w realu to numer loterii
               "998",        // NR_STRAZ_POZARNA
               "999",        // NR_POGOTOWIE
               };
+int next_in_biuro_numerow = 0; // 0 - random
 
 long tmp_long;
 long tmp_long1;
@@ -1348,6 +1349,27 @@ void loop() {
         }
       }
       else
+      if(strncmp(dialDigits, nr[NR_BIURO_NUMEROW], 3) == 0) {
+        char nn;
+        char ss;
+        // Answers with specified or random number from available list
+        resetSound();
+        if(!incoming_call) {
+			    addSoundAnswer();
+		  	  if(next_in_biuro_numerow)
+            nn = next_in_biuro_numerow;
+	        else
+		  	    nn = random(sizeof(nr));
+          next_in_biuro_numerow = 0;
+          ss = sizeof(nr[nn]);
+			    // add digits to play list
+			    for(ff=0; ff<ss; ff++)
+				    addSound(1000-'0'+nr[nn][ff], 100);
+          addSoundBusy();
+        }
+        beep(sound);
+      }
+      else
       if(strncmp(dialDigits, nr[NR_RYKI], 9) == 0) {
            // po sygnale ktos odbiera
                //memset(sound, 0, sizeof(sound));
@@ -1430,7 +1452,7 @@ void loop() {
            if(!incoming_call) {
             addSound(21,1);  // save light
             addSound(17,1000); // red light
-            addSound(22,500); // savedlight
+            addSound(22,500); // restore saved light
            }
            beep(sound);
         }
